@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { SharedModule } from './shared/shared.module';
 import { PeopleModule } from './people/people.module';
 import { AttendanceModule } from './attendance/attendance.module';
 import { RecognitionModule } from './recognition/recognition.module';
@@ -29,6 +30,7 @@ import { Attendance } from './attendance/attendance.entity';
       }),
       inject: [ConfigService],
     }),
+    SharedModule,
     PeopleModule,
     AttendanceModule,
     RecognitionModule,

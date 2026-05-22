@@ -5,6 +5,7 @@ import {
   CreateDateColumn,
   ManyToOne,
   JoinColumn,
+  Index,
 } from 'typeorm';
 import { Person } from '../people/people.entity';
 
@@ -17,12 +18,14 @@ export class Attendance {
   @JoinColumn({ name: 'person_id' })
   person: Person;
 
+  @Index()
   @Column({ name: 'person_id' })
   personId: number;
 
   @Column('float')
   confidence: number;
 
+  @Index()
   @Column({ type: 'timestamptz', default: () => 'NOW()' })
   timestamp: Date;
 

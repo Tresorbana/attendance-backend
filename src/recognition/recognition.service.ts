@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PeopleService } from '../people/people.service';
 import { AttendanceService } from '../attendance/attendance.service';
-import { Person } from '../people/people.entity';
+import { DescriptorCache, CachedPerson } from '../shared/descriptor-cache';
 
 export type RecognizeResult =
   | { matched: true; name: string; confidence: number; person_id: number }
@@ -18,6 +18,7 @@ export class RecognitionService {
     private readonly peopleService: PeopleService,
     private readonly attendanceService: AttendanceService,
     private readonly configService: ConfigService,
+    private readonly descriptorCache: DescriptorCache,
   ) {
     this.baseThreshold = parseFloat(
       this.configService.get<string>('RECOGNITION_THRESHOLD', '0.6'),
@@ -58,33 +59,50 @@ export class RecognitionService {
   }
 
   /**
+   * Load enrolled people from the in-memory descriptor cache, falling back to
+   * the database on first call or after an invalidation (enroll / delete).
+   */
+  private async getPeople(): Promise<CachedPerson[]> {
+    if (this.descriptorCache.has()) {
+      return this.descriptorCache.get()!;
+    }
+    const people = await this.peopleService.findAllWithDescriptors();
+    const cached = people
+      .filter((p) => p.faceDescriptor && p.faceDescriptor.length >= 128)
+      .map((p) => ({
+        id: p.id,
+        name: p.name,
+        role: p.role,
+        faceDescriptor: p.faceDescriptor,
+      }));
+    this.descriptorCache.set(cached);
+    return cached;
+  }
+
+  /**
    * Match a face descriptor against all enrolled employees.
    *
    * How attendance is recorded:
-   *   1. Load all enrolled face descriptors from PostgreSQL.
+   *   1. Load descriptors from the in-memory cache (DB hit only on first call
+   *      or after enroll / delete invalidation — zero overhead per scan cycle).
    *   2. Compute Euclidean distance to each; find the closest.
-   *   3. If closest distance < threshold → matched.
-   *   4. Adaptive threshold: slightly relaxed in low / very-low light so
-   *      preprocessed descriptors are not unfairly penalised.
-   *   5. Cooldown check: if the person clocked in within the cooldown window
-   *      (default 5 min), return matched=true but skip the DB insert to
-   *      prevent duplicate records.
-   *   6. Otherwise insert a new row in the `attendance` table with the
-   *      person_id, confidence score, and current timestamp.
+   *   3. If closest distance < adaptive threshold → matched.
+   *   4. Cooldown check: if the person clocked in within the cooldown window
+   *      (default 5 min), return matched=true but skip the DB insert.
+   *   5. Otherwise insert a new row in the `attendance` table.
    */
   async recognize(descriptor: number[], brightness?: number): Promise<RecognizeResult> {
-    const people = await this.peopleService.findAllWithDescriptors();
+    const people = await this.getPeople();
 
     if (people.length === 0) {
       this.logger.warn('No enrolled employees — recognition skipped');
       return { matched: false };
     }
 
-    let bestMatch: Person | null = null;
+    let bestMatch: CachedPerson | null = null;
     let bestDistance = Infinity;
 
     for (const person of people) {
-      if (!person.faceDescriptor || person.faceDescriptor.length < 128) continue;
       const dist = this.euclideanDistance(descriptor, person.faceDescriptor);
       if (dist < bestDistance) {
         bestDistance = dist;

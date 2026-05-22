@@ -19,13 +19,15 @@ export class AttendanceController {
   @ApiQuery({ name: 'from', required: false, type: String, description: 'ISO date string (start)' })
   @ApiQuery({ name: 'to', required: false, type: String, description: 'ISO date string (end)' })
   @ApiQuery({ name: 'search', required: false, type: String, description: 'Search by name' })
+  @ApiQuery({ name: 'personId', required: false, type: Number, description: 'Filter by person ID' })
   @ApiResponse({ status: 200, description: 'Array of attendance records' })
   getAll(
     @Query('from') from?: string,
     @Query('to') to?: string,
     @Query('search') search?: string,
+    @Query('personId') personId?: string,
   ) {
-    return this.attendanceService.getAll(from, to, search);
+    return this.attendanceService.getAll(from, to, search, personId ? parseInt(personId, 10) : undefined);
   }
 }
 
