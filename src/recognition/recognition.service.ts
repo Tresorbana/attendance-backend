@@ -12,6 +12,7 @@ export type RecognizeResult =
 export class RecognitionService {
   private readonly logger = new Logger(RecognitionService.name);
   private readonly baseThreshold: number;
+  private readonly minConfidence: number;
   private readonly cooldownMs: number;
 
   constructor(
@@ -22,6 +23,9 @@ export class RecognitionService {
   ) {
     this.baseThreshold = parseFloat(
       this.configService.get<string>('RECOGNITION_THRESHOLD', '0.6'),
+    );
+    this.minConfidence = parseFloat(
+      this.configService.get<string>('MIN_RECOGNITION_CONFIDENCE', '0.5'),
     );
     const cooldownMinutes = parseInt(
       this.configService.get<string>('CHECKIN_COOLDOWN_MINUTES', '5'),
@@ -122,6 +126,13 @@ export class RecognitionService {
     // Normalise confidence to 0–1 against the base threshold so it reflects
     // actual quality rather than how permissive the current threshold is.
     const confidence = Math.max(0, 1 - bestDistance / this.baseThreshold);
+
+    if (confidence < this.minConfidence) {
+      this.logger.debug(
+        `Rejected low-confidence match "${bestMatch.name}" dist=${bestDistance.toFixed(4)} conf=${(confidence * 100).toFixed(1)}% min=${(this.minConfidence * 100).toFixed(1)}% brightness=${brightness ?? 'n/a'}`,
+      );
+      return { matched: false };
+    }
 
     this.logger.debug(
       `Matched "${bestMatch.name}" dist=${bestDistance.toFixed(4)} conf=${(confidence * 100).toFixed(1)}% brightness=${brightness ?? 'n/a'}`,
