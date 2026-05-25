@@ -10,15 +10,15 @@ export class Holiday {
   @PrimaryGeneratedColumn()
   id: number;
 
-  @Column({ length: 200 })
+  @Column({ type: 'varchar', length: 200 })
   name: string;
 
   /** ISO date string YYYY-MM-DD */
-  @Column({ length: 10, unique: true })
+  @Column({ type: 'varchar', length: 10, unique: true })
   date: string;
 
   /** true = confirmed public holiday, false = tentative */
-  @Column({ default: false })
+  @Column({ type: 'boolean', default: false })
   confirmed: boolean;
 
   @CreateDateColumn({ name: 'created_at' })

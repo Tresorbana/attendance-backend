@@ -21,17 +21,18 @@ export class Attendance {
   person: Person;
 
   @Index()
-  @Column({ name: 'person_id' })
+  @Column({ type: 'int', name: 'person_id' })
   personId: number;
 
-  @Column('float')
+  @Column({ type: 'float' })
   confidence: number;
 
   @Index()
   @Column({ type: 'timestamptz', default: () => 'NOW()' })
   timestamp: Date;
 
-  /** 'check-in' or 'check-out' */
+  // Explicit type: 'varchar' prevents reflect-metadata emitting "Object"
+  // for the string union type 'check-in' | 'check-out'
   @Column({ type: 'varchar', length: 20, default: 'check-in', name: 'type' })
   type: AttendanceType;
 
