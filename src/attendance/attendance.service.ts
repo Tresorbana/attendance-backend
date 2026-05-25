@@ -129,7 +129,8 @@ export class AttendanceService {
     const qb = this.attendanceRepo
       .createQueryBuilder('a')
       .leftJoinAndSelect('a.person', 'person')
-      .orderBy('a.timestamp', 'DESC');
+      .orderBy('a.timestamp', 'DESC')
+      .take(500); // hard cap — never return unbounded results
 
     if (from) qb.andWhere('a.timestamp >= :from', { from: new Date(from) });
     if (to) {
@@ -141,7 +142,9 @@ export class AttendanceService {
     if (station) qb.andWhere('person.station = :station', { station });
     if (type) qb.andWhere('a.type = :type', { type });
     if (search && search.trim()) {
-      qb.andWhere('person.name ILIKE :search', { search: `%${search.trim()}%` });
+      // Limit search string length to prevent DoS
+      const safeSearch = search.trim().slice(0, 100);
+      qb.andWhere('person.name ILIKE :search', { search: `%${safeSearch}%` });
     }
 
     const records = await qb.getMany();

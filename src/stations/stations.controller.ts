@@ -9,10 +9,12 @@ import {
   ParseIntPipe,
   HttpCode,
   HttpStatus,
+  UseGuards,
 } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiParam, ApiResponse } from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiParam, ApiResponse, ApiHeader } from '@nestjs/swagger';
 import { StationsService } from './stations.service';
 import { CreateStationDto } from './dto/create-station.dto';
+import { AdminKeyGuard } from '../common/admin-key.guard';
 
 @ApiTags('stations')
 @Controller('stations')
@@ -20,7 +22,7 @@ export class StationsController {
   constructor(private readonly stationsService: StationsService) {}
 
   @Get()
-  @ApiOperation({ summary: 'List all stations with admin info (no passwords)' })
+  @ApiOperation({ summary: 'List all stations (no passwords returned)' })
   findAll() {
     return this.stationsService.findAll();
   }
@@ -38,13 +40,17 @@ export class StationsController {
     return this.stationsService.findOne(id);
   }
 
+  /**
+   * Seed endpoint — protected by X-Admin-Key.
+   * Call from server: curl -X POST -H "X-Admin-Key: <ADMIN_PASSWORD>" /api/stations/seed-demo
+   */
   @Post('seed-demo')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({
-    summary: 'Seed demo stations with portal credentials for testing',
-    description: 'Creates 3 demo stations if they do not already exist. Safe to call multiple times.',
-  })
-  @ApiResponse({ status: 200, description: 'Array of created/existing demo stations' })
+  @UseGuards(AdminKeyGuard)
+  @ApiOperation({ summary: 'Seed all Indongozi SACCO branches (X-Admin-Key required)' })
+  @ApiHeader({ name: 'X-Admin-Key', description: 'Must match ADMIN_PASSWORD', required: true })
+  @ApiResponse({ status: 200, description: 'Created and skipped branch names' })
+  @ApiResponse({ status: 401, description: 'Missing or invalid X-Admin-Key' })
   seedDemo() {
     return this.stationsService.seedDemoStations();
   }

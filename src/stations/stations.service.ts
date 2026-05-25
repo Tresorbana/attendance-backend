@@ -91,47 +91,50 @@ export class StationsService {
   }
 
   /**
-   * Seed 3 demo stations with portal credentials.
+   * Seed all 15 Indongozi SACCO Nyamasheke branches + HQ.
    * Safe to call multiple times — skips existing stations.
    */
   async seedDemoStations(): Promise<{ created: StationPublic[]; skipped: string[] }> {
-    const demos = [
-      {
-        name: 'Nairobi HQ',
-        code: 'NBI-HQ',
-        address: 'Upperhill, Nairobi',
-        adminUsername: 'nairobi_admin',
-        adminPassword: 'Nairobi@2026',
-        adminFullName: 'Nairobi Branch Admin',
-      },
-      {
-        name: 'Mombasa Branch',
-        code: 'MSA-BR',
-        address: 'Nyali, Mombasa',
-        adminUsername: 'mombasa_admin',
-        adminPassword: 'Mombasa@2026',
-        adminFullName: 'Mombasa Branch Admin',
-      },
-      {
-        name: 'Kisumu Office',
-        code: 'KSM-OF',
-        address: 'Milimani, Kisumu',
-        adminUsername: 'kisumu_admin',
-        adminPassword: 'Kisumu@2026',
-        adminFullName: 'Kisumu Office Admin',
-      },
+    // Indongozi SACCO Nyamasheke — HQ + 15 branches
+    const branches = [
+      { name: 'Nyamasheke HQ',   code: 'HQ',         address: 'Nyamasheke, Western Province', isHQ: true },
+      { name: 'Bushekeri',        code: 'BSK',         address: 'Bushekeri, Nyamasheke' },
+      { name: 'Bushenge',         code: 'BSG',         address: 'Bushenge, Nyamasheke' },
+      { name: 'Cyato',            code: 'CYT',         address: 'Cyato, Nyamasheke' },
+      { name: 'Gihombo',          code: 'GHB',         address: 'Gihombo, Nyamasheke' },
+      { name: 'Kagano',           code: 'KGN',         address: 'Kagano, Nyamasheke' },
+      { name: 'Kanjongo',         code: 'KJG',         address: 'Kanjongo, Nyamasheke' },
+      { name: 'Karambi',          code: 'KRB',         address: 'Karambi, Nyamasheke' },
+      { name: 'Karengera',        code: 'KRG',         address: 'Karengera, Nyamasheke' },
+      { name: 'Kirimbi',          code: 'KRM',         address: 'Kirimbi, Nyamasheke' },
+      { name: 'Macuba',           code: 'MCB',         address: 'Macuba, Nyamasheke' },
+      { name: 'Mahembe',          code: 'MHB',         address: 'Mahembe, Nyamasheke' },
+      { name: 'Nyabitekeri',      code: 'NBT',         address: 'Nyabitekeri, Nyamasheke' },
+      { name: 'Rangiro',          code: 'RNG',         address: 'Rangiro, Nyamasheke' },
+      { name: 'Ruharambuga',      code: 'RHR',         address: 'Ruharambuga, Nyamasheke' },
+      { name: 'Shangi',           code: 'SHG',         address: 'Shangi, Nyamasheke' },
     ];
 
     const created: StationPublic[] = [];
     const skipped: string[] = [];
 
-    for (const demo of demos) {
-      const existing = await this.stationRepo.findOne({ where: { name: demo.name } });
+    for (const branch of branches) {
+      const existing = await this.stationRepo.findOne({ where: { name: branch.name } });
       if (existing) {
-        skipped.push(demo.name);
+        skipped.push(branch.name);
         continue;
       }
-      const station = this.stationRepo.create(demo);
+
+      // Generate portal credentials from the branch code
+      const code = branch.code.toLowerCase();
+      const station = this.stationRepo.create({
+        name: branch.name,
+        code: branch.code,
+        address: branch.address,
+        adminUsername: `${code}_admin`,
+        adminPassword: `Indongozi@${code.toUpperCase()}`,
+        adminFullName: `${branch.name} Admin`,
+      });
       const saved = await this.stationRepo.save(station);
       created.push(this.toPublic(saved));
     }

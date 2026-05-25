@@ -11,7 +11,7 @@ export class Station {
   @PrimaryGeneratedColumn()
   id: number;
 
-  /** Display name, e.g. "Nairobi HQ" */
+  /** Display name, e.g. "Nyamasheke HQ" */
   @Column({ type: 'varchar', length: 150, unique: true })
   name: string;
 

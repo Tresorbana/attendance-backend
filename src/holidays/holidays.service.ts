@@ -23,7 +23,7 @@ export class HolidaysService {
   async findByYear(year: number): Promise<Holiday[]> {
     return this.holidayRepo
       .createQueryBuilder('h')
-      .where("h.date LIKE :prefix", { prefix: `${year}-%` })
+      .where('h.date LIKE :prefix', { prefix: `${year}-%` })
       .orderBy('h.date', 'ASC')
       .getMany();
   }
@@ -63,20 +63,57 @@ export class HolidaysService {
     await this.holidayRepo.remove(holiday);
   }
 
-  /** Seed default public holidays for a given year if none exist */
+  /**
+   * Seed Rwanda official public holidays for a given year.
+   * Safe to call multiple times — skips if holidays already exist for that year.
+   *
+   * Fixed dates are confirmed=true.
+   * Islamic holidays (Eid al-Fitr, Eid al-Adha) are confirmed=false (tentative)
+   * because their exact dates depend on moon sighting and shift each year.
+   */
   async seedDefaults(year: number): Promise<void> {
     const existing = await this.findByYear(year);
     if (existing.length > 0) return;
 
+    // ── Islamic holiday dates (approximate — vary by moon sighting) ──────────
+    // These are pre-calculated estimates. Admins should confirm/adjust via UI.
+    const islamicDates = this.getIslamicHolidayDates(year);
+
     const defaults: CreateHolidayDto[] = [
+      // ── January ────────────────────────────────────────────────────────────
       { name: "New Year's Day", date: `${year}-01-01`, confirmed: true },
-      { name: 'Good Friday', date: this.getGoodFriday(year), confirmed: false },
-      { name: 'Easter Monday', date: this.getEasterMonday(year), confirmed: false },
-      { name: 'Labour Day', date: `${year}-05-01`, confirmed: true },
-      { name: 'Madaraka Day', date: `${year}-06-01`, confirmed: true },
-      { name: 'Utamaduni Day', date: `${year}-10-10`, confirmed: true },
-      { name: 'Huduma Day', date: `${year}-10-27`, confirmed: true },
-      { name: 'Jamhuri Day', date: `${year}-12-12`, confirmed: true },
+      { name: 'Day after New Year\'s Day', date: `${year}-01-02`, confirmed: true },
+
+      // ── February ───────────────────────────────────────────────────────────
+      // National Heroes' Day — February 1 (observed Feb 2 if on weekend)
+      { name: "National Heroes' Day", date: this.observedDate(year, 2, 1), confirmed: true },
+
+      // ── Islamic: Eid al-Fitr (end of Ramadan) ──────────────────────────────
+      { name: 'Eid al-Fitr (End of Ramadan)', date: islamicDates.eidAlFitr, confirmed: false },
+
+      // ── April ──────────────────────────────────────────────────────────────
+      { name: 'Good Friday', date: this.getGoodFriday(year), confirmed: true },
+      { name: 'Easter Monday', date: this.getEasterMonday(year), confirmed: true },
+      // Genocide Against the Tutsi Memorial Day — April 7
+      { name: 'Genocide Against the Tutsi Memorial Day', date: `${year}-04-07`, confirmed: true },
+
+      // ── May ────────────────────────────────────────────────────────────────
+      { name: 'Labour Day (Worker\'s Day)', date: `${year}-05-01`, confirmed: true },
+
+      // ── Islamic: Eid al-Adha (Feast of Sacrifice) ──────────────────────────
+      { name: 'Eid al-Adha (Feast of Sacrifice)', date: islamicDates.eidAlAdha, confirmed: false },
+
+      // ── July ───────────────────────────────────────────────────────────────
+      { name: 'Independence Day', date: `${year}-07-01`, confirmed: true },
+      // Liberation Day (Kwibohora) — July 4
+      { name: 'Liberation Day (Kwibohora)', date: `${year}-07-04`, confirmed: true },
+
+      // ── August ─────────────────────────────────────────────────────────────
+      // Umuganura Day — first Friday of August
+      { name: 'Umuganura Day (National Thanksgiving)', date: this.getFirstFridayOfAugust(year), confirmed: true },
+      { name: 'Assumption Day', date: `${year}-08-15`, confirmed: true },
+
+      // ── December ───────────────────────────────────────────────────────────
       { name: 'Christmas Day', date: `${year}-12-25`, confirmed: true },
       { name: 'Boxing Day', date: `${year}-12-26`, confirmed: true },
     ];
@@ -85,12 +122,68 @@ export class HolidaysService {
       try {
         await this.create(d);
       } catch {
-        // ignore duplicate key errors
+        // ignore duplicate key errors (unique constraint on date)
       }
     }
   }
 
-  /** Compute Good Friday date using the Anonymous Gregorian algorithm */
+  // ── Private helpers ─────────────────────────────────────────────────────────
+
+  /**
+   * If a fixed holiday falls on a Saturday, observe on Monday.
+   * If it falls on a Sunday, observe on Monday.
+   * Rwanda typically observes on the next Monday.
+   */
+  private observedDate(year: number, month: number, day: number): string {
+    const d = new Date(year, month - 1, day);
+    const dow = d.getDay(); // 0=Sun, 6=Sat
+    if (dow === 6) d.setDate(d.getDate() + 2); // Sat → Mon
+    else if (dow === 0) d.setDate(d.getDate() + 1); // Sun → Mon
+    return d.toISOString().slice(0, 10);
+  }
+
+  /** First Friday of August */
+  private getFirstFridayOfAugust(year: number): string {
+    const d = new Date(year, 7, 1); // August 1
+    while (d.getDay() !== 5) d.setDate(d.getDate() + 1); // advance to Friday
+    return d.toISOString().slice(0, 10);
+  }
+
+  /**
+   * Approximate Islamic holiday dates using the Hijri calendar offset.
+   * These are estimates — the actual dates depend on moon sighting.
+   * Admins should verify and confirm via the Holidays UI.
+   *
+   * Reference offsets from known dates:
+   *   Eid al-Fitr 2026: ~March 20
+   *   Eid al-Adha 2026: ~May 27
+   *   Each year shifts back ~11 days in the Gregorian calendar.
+   */
+  private getIslamicHolidayDates(year: number): {
+    eidAlFitr: string;
+    eidAlAdha: string;
+  } {
+    // Base year 2026 known dates
+    const BASE_YEAR = 2026;
+    const BASE_EID_FITR = new Date(2026, 2, 20);  // March 20, 2026
+    const BASE_EID_ADHA = new Date(2026, 4, 27);  // May 27, 2026
+    const DAYS_PER_HIJRI_YEAR = 354.367; // average Hijri year in days
+
+    const yearDiff = year - BASE_YEAR;
+    const dayOffset = Math.round(yearDiff * DAYS_PER_HIJRI_YEAR);
+
+    const eidFitr = new Date(BASE_EID_FITR);
+    eidFitr.setDate(eidFitr.getDate() + dayOffset);
+
+    const eidAdha = new Date(BASE_EID_ADHA);
+    eidAdha.setDate(eidAdha.getDate() + dayOffset);
+
+    return {
+      eidAlFitr: eidFitr.toISOString().slice(0, 10),
+      eidAlAdha: eidAdha.toISOString().slice(0, 10),
+    };
+  }
+
   private getGoodFriday(year: number): string {
     const easter = this.computeEaster(year);
     const gf = new Date(easter);
@@ -105,6 +198,7 @@ export class HolidaysService {
     return em.toISOString().slice(0, 10);
   }
 
+  /** Anonymous Gregorian algorithm for Easter Sunday */
   private computeEaster(year: number): Date {
     const a = year % 19;
     const b = Math.floor(year / 100);

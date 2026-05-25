@@ -10,9 +10,11 @@ import {
   ParseIntPipe,
   HttpCode,
   HttpStatus,
+  UseGuards,
 } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiQuery, ApiParam, ApiResponse } from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiQuery, ApiParam, ApiResponse, ApiHeader } from '@nestjs/swagger';
 import { HolidaysService, CreateHolidayDto } from './holidays.service';
+import { AdminKeyGuard } from '../common/admin-key.guard';
 
 @ApiTags('holidays')
 @Controller('holidays')
@@ -22,15 +24,20 @@ export class HolidaysController {
   @Get()
   @ApiOperation({ summary: 'List all holidays, optionally filtered by year' })
   @ApiQuery({ name: 'year', required: false, type: Number })
-  @ApiResponse({ status: 200, description: 'Array of holiday objects' })
   findAll(@Query('year') year?: string) {
     if (year) return this.holidaysService.findByYear(parseInt(year, 10));
     return this.holidaysService.findAll();
   }
 
+  /**
+   * Seed endpoint — protected by X-Admin-Key.
+   * Call from server: curl -X POST -H "X-Admin-Key: <ADMIN_PASSWORD>" /api/holidays/seed/2026
+   */
   @Post('seed/:year')
   @HttpCode(HttpStatus.NO_CONTENT)
-  @ApiOperation({ summary: 'Seed default public holidays for a year' })
+  @UseGuards(AdminKeyGuard)
+  @ApiOperation({ summary: 'Seed Rwanda public holidays (X-Admin-Key required)' })
+  @ApiHeader({ name: 'X-Admin-Key', description: 'Must match ADMIN_PASSWORD', required: true })
   @ApiParam({ name: 'year', type: Number })
   async seed(@Param('year', ParseIntPipe) year: number) {
     await this.holidaysService.seedDefaults(year);
@@ -39,7 +46,6 @@ export class HolidaysController {
   @Post()
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({ summary: 'Create a holiday' })
-  @ApiResponse({ status: 201, description: 'Created holiday' })
   create(@Body() dto: CreateHolidayDto) {
     return this.holidaysService.create(dto);
   }

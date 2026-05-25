@@ -30,7 +30,7 @@ export class EnrollDto {
   @IsOptional()
   role: string = 'Employee';
 
-  @ApiPropertyOptional({ description: 'Office station / branch', example: 'Nairobi HQ' })
+  @ApiPropertyOptional({ description: 'Office station / branch', example: 'Bushenge Branch' })
   @IsString()
   @IsOptional()
   station?: string;
