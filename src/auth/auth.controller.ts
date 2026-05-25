@@ -10,10 +10,10 @@ export class AuthController {
 
   @Post('login')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Authenticate an administrator' })
-  @ApiResponse({ status: 200, description: 'Authenticated admin user' })
+  @ApiOperation({ summary: 'Authenticate a super-admin or station-admin' })
+  @ApiResponse({ status: 200, description: 'Authenticated user with role and station info' })
   @ApiResponse({ status: 401, description: 'Invalid credentials' })
-  login(@Body() dto: LoginDto): AuthUser {
+  login(@Body() dto: LoginDto): Promise<AuthUser> {
     return this.authService.login(dto);
   }
 }

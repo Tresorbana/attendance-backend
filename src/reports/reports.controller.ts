@@ -37,9 +37,10 @@ export class ReportsController {
   }
 
   @Get('present-today')
-  @ApiOperation({ summary: 'Distinct employees present vs absent today' })
-  presentToday() {
-    return this.reportsService.presentToday();
+  @ApiOperation({ summary: 'Distinct employees present vs absent today, optionally scoped to a station' })
+  @ApiQuery({ name: 'station', required: false, type: String })
+  presentToday(@Query('station') station?: string) {
+    return this.reportsService.presentToday(station);
   }
 
   @Get('by-role')

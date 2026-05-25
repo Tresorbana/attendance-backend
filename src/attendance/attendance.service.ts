@@ -1,7 +1,8 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, MoreThanOrEqual } from 'typeorm';
+import { Repository } from 'typeorm';
 import { Attendance, AttendanceType } from './attendance.entity';
+import { Person } from '../people/people.entity';
 import { PeopleService } from '../people/people.service';
 
 export interface AttendanceRecord {
@@ -48,6 +49,8 @@ export class AttendanceService {
   constructor(
     @InjectRepository(Attendance)
     private readonly attendanceRepo: Repository<Attendance>,
+    @InjectRepository(Person)
+    private readonly personRepo: Repository<Person>,
     private readonly peopleService: PeopleService,
   ) {}
 
@@ -102,12 +105,16 @@ export class AttendanceService {
     return lastCheckIn;
   }
 
-  async getRecent(limit = 10): Promise<AttendanceRecord[]> {
-    const records = await this.attendanceRepo.find({
-      order: { timestamp: 'DESC' },
-      take: limit,
-      relations: ['person'],
-    });
+  async getRecent(limit = 10, station?: string): Promise<AttendanceRecord[]> {
+    const qb = this.attendanceRepo
+      .createQueryBuilder('a')
+      .leftJoinAndSelect('a.person', 'person')
+      .orderBy('a.timestamp', 'DESC')
+      .take(limit);
+
+    if (station) qb.where('person.station = :station', { station });
+
+    const records = await qb.getMany();
     return this.formatRecords(records);
   }
 
@@ -141,37 +148,44 @@ export class AttendanceService {
     return this.formatRecords(records);
   }
 
-  async getStats(): Promise<StatsResponse> {
+  async getStats(station?: string): Promise<StatsResponse> {
     const todayStart = new Date();
     todayStart.setHours(0, 0, 0, 0);
 
-    const [totalPeople, todayCount, uniqueTodayResult, [lastRecord]] = await Promise.all([
-      this.peopleService.count(),
-      this.attendanceRepo.count({
-        where: { timestamp: MoreThanOrEqual(todayStart), type: 'check-in' },
-      }),
+    const [totalPeople, uniqueTodayResult, lastRecordResult] = await Promise.all([
+      station
+        ? this.personRepo
+            .createQueryBuilder('p')
+            .where('p.station = :station', { station })
+            .getCount()
+        : this.peopleService.count(),
       this.attendanceRepo
         .createQueryBuilder('a')
+        .leftJoin('a.person', 'person')
         .select('COUNT(DISTINCT a.person_id)', 'count')
         .where('a.timestamp >= :todayStart', { todayStart })
         .andWhere("a.type = 'check-in'")
+        .andWhere(station ? 'person.station = :station' : '1=1', { station })
         .getRawOne(),
-      this.attendanceRepo.find({
-        where: { type: 'check-in' },
-        order: { timestamp: 'DESC' },
-        take: 1,
-      }),
+      this.attendanceRepo
+        .createQueryBuilder('a')
+        .leftJoin('a.person', 'person')
+        .where("a.type = 'check-in'")
+        .andWhere(station ? 'person.station = :station' : '1=1', { station })
+        .orderBy('a.timestamp', 'DESC')
+        .limit(1)
+        .getOne(),
     ]);
 
-    const uniqueToday = parseInt(uniqueTodayResult?.count || '0', 10);
+    const todayCount = parseInt(uniqueTodayResult?.count || '0', 10);
     const attendanceRate =
-      totalPeople > 0 ? Math.round((uniqueToday / totalPeople) * 100) : 0;
+      totalPeople > 0 ? Math.round((todayCount / totalPeople) * 100) : 0;
 
     return {
       totalPeople,
       todayCount,
       attendanceRate,
-      lastCheckIn: lastRecord?.timestamp || null,
+      lastCheckIn: lastRecordResult?.timestamp || null,
     };
   }
 

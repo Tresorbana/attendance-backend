@@ -117,17 +117,24 @@ export class ReportsService {
     return this.buildDailyBuckets(30);
   }
 
-  async presentToday(): Promise<PresentToday> {
+  async presentToday(station?: string): Promise<PresentToday> {
     const { start } = this.todayBounds();
-    const [total, presentResult] = await Promise.all([
-      this.peopleService.count(),
-      this.attendanceRepo
-        .createQueryBuilder('a')
-        .select('COUNT(DISTINCT a.person_id)', 'count')
-        .where('a.timestamp >= :start', { start })
-        .andWhere("a.type = 'check-in'")
-        .getRawOne(),
-    ]);
+
+    const totalQb = this.attendanceRepo.manager
+      .getRepository('people')
+      .createQueryBuilder('p');
+    if (station) totalQb.where('p.station = :station', { station });
+    const total = await totalQb.getCount();
+
+    const presentQb = this.attendanceRepo
+      .createQueryBuilder('a')
+      .leftJoin('a.person', 'person')
+      .select('COUNT(DISTINCT a.person_id)', 'count')
+      .where('a.timestamp >= :start', { start })
+      .andWhere("a.type = 'check-in'");
+    if (station) presentQb.andWhere('person.station = :station', { station });
+
+    const presentResult = await presentQb.getRawOne();
     const present = parseInt(presentResult?.count || '0', 10);
     return { present, total, absent: Math.max(0, total - present) };
   }
