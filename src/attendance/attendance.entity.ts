@@ -9,6 +9,8 @@ import {
 } from 'typeorm';
 import { Person } from '../people/people.entity';
 
+export type AttendanceType = 'check-in' | 'check-out';
+
 @Entity('attendance')
 export class Attendance {
   @PrimaryGeneratedColumn()
@@ -28,6 +30,10 @@ export class Attendance {
   @Index()
   @Column({ type: 'timestamptz', default: () => 'NOW()' })
   timestamp: Date;
+
+  /** 'check-in' or 'check-out' */
+  @Column({ type: 'varchar', length: 20, default: 'check-in', name: 'type' })
+  type: AttendanceType;
 
   @CreateDateColumn({ name: 'created_at' })
   createdAt: Date;

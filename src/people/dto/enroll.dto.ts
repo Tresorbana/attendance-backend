@@ -6,10 +6,16 @@ import {
   ArrayMaxSize,
   IsNotEmpty,
   IsOptional,
+  Matches,
 } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class EnrollDto {
+  @ApiPropertyOptional({ description: 'Employee ID (unique)', example: 'EMP-001' })
+  @IsString()
+  @IsOptional()
+  employeeId?: string;
+
   @ApiProperty({ description: 'Full name of the person', example: 'Jane Doe' })
   @IsString()
   @IsNotEmpty()
@@ -17,12 +23,29 @@ export class EnrollDto {
 
   @ApiPropertyOptional({
     description: 'Role of the person',
-    example: 'Student',
-    default: 'Student',
+    example: 'Employee',
+    default: 'Employee',
   })
   @IsString()
   @IsOptional()
-  role: string = 'Student';
+  role: string = 'Employee';
+
+  @ApiPropertyOptional({ description: 'Office station / branch', example: 'Nairobi HQ' })
+  @IsString()
+  @IsOptional()
+  station?: string;
+
+  @ApiPropertyOptional({ description: 'Expected check-in time HH:MM', example: '08:00' })
+  @IsString()
+  @IsOptional()
+  @Matches(/^\d{2}:\d{2}$/, { message: 'scheduleStart must be HH:MM' })
+  scheduleStart?: string;
+
+  @ApiPropertyOptional({ description: 'Expected check-out time HH:MM', example: '17:00' })
+  @IsString()
+  @IsOptional()
+  @Matches(/^\d{2}:\d{2}$/, { message: 'scheduleEnd must be HH:MM' })
+  scheduleEnd?: string;
 
   @ApiProperty({
     description: '128-dimensional face descriptor array from face-api.js',

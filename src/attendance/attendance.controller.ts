@@ -1,6 +1,7 @@
 import { Controller, Get, Query } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiQuery, ApiResponse } from '@nestjs/swagger';
 import { AttendanceService } from './attendance.service';
+import { AttendanceType } from './attendance.entity';
 
 @ApiTags('attendance')
 @Controller('attendance')
@@ -8,7 +9,7 @@ export class AttendanceController {
   constructor(private readonly attendanceService: AttendanceService) {}
 
   @Get('recent')
-  @ApiOperation({ summary: 'Get the last 10 attendance check-ins' })
+  @ApiOperation({ summary: 'Get the last 10 attendance records' })
   @ApiResponse({ status: 200, description: 'Array of recent attendance records' })
   getRecent() {
     return this.attendanceService.getRecent(10);
@@ -16,18 +17,29 @@ export class AttendanceController {
 
   @Get()
   @ApiOperation({ summary: 'Get attendance records with optional filters' })
-  @ApiQuery({ name: 'from', required: false, type: String, description: 'ISO date string (start)' })
-  @ApiQuery({ name: 'to', required: false, type: String, description: 'ISO date string (end)' })
-  @ApiQuery({ name: 'search', required: false, type: String, description: 'Search by name' })
-  @ApiQuery({ name: 'personId', required: false, type: Number, description: 'Filter by person ID' })
+  @ApiQuery({ name: 'from', required: false, type: String })
+  @ApiQuery({ name: 'to', required: false, type: String })
+  @ApiQuery({ name: 'search', required: false, type: String })
+  @ApiQuery({ name: 'personId', required: false, type: Number })
+  @ApiQuery({ name: 'station', required: false, type: String })
+  @ApiQuery({ name: 'type', required: false, enum: ['check-in', 'check-out'] })
   @ApiResponse({ status: 200, description: 'Array of attendance records' })
   getAll(
     @Query('from') from?: string,
     @Query('to') to?: string,
     @Query('search') search?: string,
     @Query('personId') personId?: string,
+    @Query('station') station?: string,
+    @Query('type') type?: AttendanceType,
   ) {
-    return this.attendanceService.getAll(from, to, search, personId ? parseInt(personId, 10) : undefined);
+    return this.attendanceService.getAll(
+      from,
+      to,
+      search,
+      personId ? parseInt(personId, 10) : undefined,
+      station,
+      type,
+    );
   }
 }
 

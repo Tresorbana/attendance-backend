@@ -10,21 +10,18 @@ export class ReportsController {
 
   @Get('daily')
   @ApiOperation({ summary: 'Attendance count per hour for today' })
-  @ApiResponse({ status: 200, description: 'Array of hourly buckets' })
   daily() {
     return this.reportsService.daily();
   }
 
   @Get('weekly')
   @ApiOperation({ summary: 'Attendance count per day for the last 7 days' })
-  @ApiResponse({ status: 200, description: 'Array of daily buckets (7 days)' })
   weekly() {
     return this.reportsService.weekly();
   }
 
   @Get('monthly')
   @ApiOperation({ summary: 'Attendance count per day for the last 30 days' })
-  @ApiResponse({ status: 200, description: 'Array of daily buckets (30 days)' })
   monthly() {
     return this.reportsService.monthly();
   }
@@ -32,12 +29,8 @@ export class ReportsController {
   @Get('calendar')
   @ApiOperation({ summary: 'Distinct employees per day for a calendar month' })
   @ApiQuery({ name: 'year', required: true, type: Number })
-  @ApiQuery({ name: 'month', required: true, type: Number, description: '1–12' })
-  @ApiResponse({ status: 200, description: 'Array of { date, count } for every day in the month' })
-  calendarMonth(
-    @Query('year') year: string,
-    @Query('month') month: string,
-  ) {
+  @ApiQuery({ name: 'month', required: true, type: Number })
+  calendarMonth(@Query('year') year: string, @Query('month') month: string) {
     const y = parseInt(year, 10) || new Date().getFullYear();
     const m = parseInt(month, 10) || new Date().getMonth() + 1;
     return this.reportsService.calendarMonth(y, m);
@@ -45,23 +38,42 @@ export class ReportsController {
 
   @Get('present-today')
   @ApiOperation({ summary: 'Distinct employees present vs absent today' })
-  @ApiResponse({ status: 200, description: '{ present, total, absent }' })
   presentToday() {
     return this.reportsService.presentToday();
   }
 
   @Get('by-role')
   @ApiOperation({ summary: 'Check-ins today grouped by employee role' })
-  @ApiResponse({ status: 200, description: 'Array of { role, count }' })
   byRole() {
     return this.reportsService.byRole();
   }
 
+  @Get('working-hours')
+  @ApiOperation({ summary: 'Monthly working hours report per employee' })
+  @ApiQuery({ name: 'year', required: true, type: Number })
+  @ApiQuery({ name: 'month', required: true, type: Number, description: '1–12' })
+  @ApiQuery({ name: 'station', required: false, type: String })
+  @ApiQuery({ name: 'personId', required: false, type: Number })
+  workingHours(
+    @Query('year') year: string,
+    @Query('month') month: string,
+    @Query('station') station?: string,
+    @Query('personId') personId?: string,
+  ) {
+    const y = parseInt(year, 10) || new Date().getFullYear();
+    const m = parseInt(month, 10) || new Date().getMonth() + 1;
+    return this.reportsService.monthlyWorkingHours(
+      y,
+      m,
+      station,
+      personId ? parseInt(personId, 10) : undefined,
+    );
+  }
+
   @Get('export')
   @ApiOperation({ summary: 'Export attendance records as CSV' })
-  @ApiQuery({ name: 'from', required: false, type: String, description: 'Start date (ISO)' })
-  @ApiQuery({ name: 'to', required: false, type: String, description: 'End date (ISO)' })
-  @ApiResponse({ status: 200, description: 'CSV file download' })
+  @ApiQuery({ name: 'from', required: false, type: String })
+  @ApiQuery({ name: 'to', required: false, type: String })
   async exportCsv(
     @Query('from') from: string | undefined,
     @Query('to') to: string | undefined,
@@ -69,9 +81,29 @@ export class ReportsController {
   ) {
     const csv = await this.reportsService.exportCsv(from, to);
     const dateStr = new Date().toISOString().slice(0, 10);
-    const filename = `attendance-${dateStr}.csv`;
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Disposition', `attachment; filename="sams-attendance-${dateStr}.csv"`);
+    res.setHeader('Cache-Control', 'no-cache');
+    res.send(csv);
+  }
+
+  @Get('export-monthly')
+  @ApiOperation({ summary: 'Export monthly working hours report as CSV' })
+  @ApiQuery({ name: 'year', required: true, type: Number })
+  @ApiQuery({ name: 'month', required: true, type: Number })
+  @ApiQuery({ name: 'station', required: false, type: String })
+  async exportMonthlyCsv(
+    @Query('year') year: string,
+    @Query('month') month: string,
+    @Query('station') station: string | undefined,
+    @Res() res: Response,
+  ) {
+    const y = parseInt(year, 10) || new Date().getFullYear();
+    const m = parseInt(month, 10) || new Date().getMonth() + 1;
+    const csv = await this.reportsService.exportMonthlyWorkingHoursCsv(y, m, station);
+    const monthStr = `${y}-${String(m).padStart(2, '0')}`;
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="sams-working-hours-${monthStr}.csv"`);
     res.setHeader('Cache-Control', 'no-cache');
     res.send(csv);
   }

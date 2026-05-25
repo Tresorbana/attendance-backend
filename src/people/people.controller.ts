@@ -2,6 +2,7 @@ import {
   Controller,
   Get,
   Post,
+  Patch,
   Delete,
   Param,
   Body,
@@ -23,6 +24,25 @@ export class PeopleController {
   @ApiResponse({ status: 200, description: 'Array of person objects' })
   findAll() {
     return this.peopleService.findAll();
+  }
+
+  @Get('stations')
+  @ApiOperation({ summary: 'List distinct station/branch names' })
+  @ApiResponse({ status: 200, description: 'Array of station name strings' })
+  getStations() {
+    return this.peopleService.getStations();
+  }
+
+  @Patch(':id')
+  @ApiOperation({ summary: 'Update employee details (no face re-enroll)' })
+  @ApiParam({ name: 'id', type: Number })
+  @ApiResponse({ status: 200, description: 'Updated person object' })
+  @ApiResponse({ status: 404, description: 'Person not found' })
+  update(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: Partial<Omit<EnrollDto, 'descriptor'>>,
+  ) {
+    return this.peopleService.update(id, dto);
   }
 
   @Delete(':id')

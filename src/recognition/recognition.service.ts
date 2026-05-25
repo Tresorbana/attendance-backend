@@ -3,9 +3,18 @@ import { ConfigService } from '@nestjs/config';
 import { PeopleService } from '../people/people.service';
 import { AttendanceService } from '../attendance/attendance.service';
 import { DescriptorCache, CachedPerson } from '../shared/descriptor-cache';
+import { AttendanceType } from '../attendance/attendance.entity';
 
 export type RecognizeResult =
-  | { matched: true; name: string; confidence: number; person_id: number }
+  | {
+      matched: true;
+      name: string;
+      confidence: number;
+      person_id: number;
+      action: AttendanceType;
+      /** true if within cooldown — record was NOT written */
+      cooldown: boolean;
+    }
   | { matched: false };
 
 @Injectable()
@@ -34,18 +43,6 @@ export class RecognitionService {
     this.cooldownMs = cooldownMinutes * 60 * 1000;
   }
 
-  /**
-   * Adaptive threshold based on lighting conditions reported by the browser.
-   *
-   * The frontend preprocesses dark frames (gamma + contrast stretch) before
-   * running face-api.js. But preprocessing introduces minor descriptor drift,
-   * so we relax the threshold slightly in poor light to compensate.
-   *
-   *   brightness  >= 60  → standard threshold (0.60)
-   *   brightness  30–60  → +8%  (low light, preprocessed)
-   *   brightness  12–30  → +15% (very dark, heavy preprocessing)
-   *   brightness unknown → standard (no brightness reported)
-   */
   private effectiveThreshold(brightness?: number): number {
     if (brightness === undefined || brightness === null) return this.baseThreshold;
     if (brightness < 30) return this.baseThreshold * 1.15;
@@ -62,10 +59,6 @@ export class RecognitionService {
     return Math.sqrt(sum);
   }
 
-  /**
-   * Load enrolled people from the in-memory descriptor cache, falling back to
-   * the database on first call or after an invalidation (enroll / delete).
-   */
   private async getPeople(): Promise<CachedPerson[]> {
     if (this.descriptorCache.has()) {
       return this.descriptorCache.get()!;
@@ -84,16 +77,12 @@ export class RecognitionService {
   }
 
   /**
-   * Match a face descriptor against all enrolled employees.
+   * Recognize a face and record check-in or check-out automatically.
    *
-   * How attendance is recorded:
-   *   1. Load descriptors from the in-memory cache (DB hit only on first call
-   *      or after enroll / delete invalidation — zero overhead per scan cycle).
-   *   2. Compute Euclidean distance to each; find the closest.
-   *   3. If closest distance < adaptive threshold → matched.
-   *   4. Cooldown check: if the person clocked in within the cooldown window
-   *      (default 5 min), return matched=true but skip the DB insert.
-   *   5. Otherwise insert a new row in the `attendance` table.
+   * Logic:
+   *   - If the person has an open check-in today (no check-out yet) → record check-out
+   *   - Otherwise → record check-in
+   *   - Cooldown applies to both actions to prevent duplicate scans
    */
   async recognize(descriptor: number[], brightness?: number): Promise<RecognizeResult> {
     const people = await this.getPeople();
@@ -123,19 +112,17 @@ export class RecognitionService {
       return { matched: false };
     }
 
-    // Normalise confidence to 0–1 against the base threshold so it reflects
-    // actual quality rather than how permissive the current threshold is.
     const confidence = Math.max(0, 1 - bestDistance / this.baseThreshold);
 
     if (confidence < this.minConfidence) {
       this.logger.debug(
-        `Rejected low-confidence match "${bestMatch.name}" dist=${bestDistance.toFixed(4)} conf=${(confidence * 100).toFixed(1)}% min=${(this.minConfidence * 100).toFixed(1)}% brightness=${brightness ?? 'n/a'}`,
+        `Rejected low-confidence match "${bestMatch.name}" conf=${(confidence * 100).toFixed(1)}%`,
       );
       return { matched: false };
     }
 
     this.logger.debug(
-      `Matched "${bestMatch.name}" dist=${bestDistance.toFixed(4)} conf=${(confidence * 100).toFixed(1)}% brightness=${brightness ?? 'n/a'}`,
+      `Matched "${bestMatch.name}" dist=${bestDistance.toFixed(4)} conf=${(confidence * 100).toFixed(1)}%`,
     );
 
     // ── Cooldown check ───────────────────────────────────────────────────────
@@ -146,13 +133,30 @@ export class RecognitionService {
         this.logger.debug(
           `Cooldown active for "${bestMatch.name}" — ${Math.round((this.cooldownMs - elapsed) / 1000)}s remaining`,
         );
-        return { matched: true, name: bestMatch.name, confidence, person_id: bestMatch.id };
+        return {
+          matched: true,
+          name: bestMatch.name,
+          confidence,
+          person_id: bestMatch.id,
+          action: lastRecord.type,
+          cooldown: true,
+        };
       }
     }
 
-    // ── Record attendance ────────────────────────────────────────────────────
-    await this.attendanceService.record(bestMatch.id, confidence);
+    // ── Determine action: check-in or check-out ──────────────────────────────
+    const openCheckIn = await this.attendanceService.getOpenCheckInToday(bestMatch.id);
+    const action: AttendanceType = openCheckIn ? 'check-out' : 'check-in';
 
-    return { matched: true, name: bestMatch.name, confidence, person_id: bestMatch.id };
+    await this.attendanceService.record(bestMatch.id, confidence, action);
+
+    return {
+      matched: true,
+      name: bestMatch.name,
+      confidence,
+      person_id: bestMatch.id,
+      action,
+      cooldown: false,
+    };
   }
 }

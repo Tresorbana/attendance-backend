@@ -7,8 +7,10 @@ import { PeopleModule } from './people/people.module';
 import { AttendanceModule } from './attendance/attendance.module';
 import { RecognitionModule } from './recognition/recognition.module';
 import { ReportsModule } from './reports/reports.module';
+import { HolidaysModule } from './holidays/holidays.module';
 import { Person } from './people/people.entity';
 import { Attendance } from './attendance/attendance.entity';
+import { Holiday } from './holidays/holiday.entity';
 
 function isSyncEnabled(value: string | undefined, fallback: boolean): boolean {
   if (value == null) return fallback;
@@ -30,7 +32,7 @@ function isSyncEnabled(value: string | undefined, fallback: boolean): boolean {
         username: config.get<string>('DATABASE_USER', 'attendai'),
         password: config.get<string>('DATABASE_PASSWORD', 'attendai_secret'),
         database: config.get<string>('DATABASE_NAME', 'attendai'),
-        entities: [Person, Attendance],
+        entities: [Person, Attendance, Holiday],
         synchronize: isSyncEnabled(
           config.get<string>('DB_SYNCHRONIZE'),
           config.get<string>('NODE_ENV') !== 'production',
@@ -45,6 +47,7 @@ function isSyncEnabled(value: string | undefined, fallback: boolean): boolean {
     AttendanceModule,
     RecognitionModule,
     ReportsModule,
+    HolidaysModule,
   ],
 })
 export class AppModule {}

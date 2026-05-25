@@ -3,6 +3,8 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Attendance } from '../attendance/attendance.entity';
 import { PeopleService } from '../people/people.service';
+import { AttendanceService, DailySession } from '../attendance/attendance.service';
+import { HolidaysService } from '../holidays/holidays.service';
 
 export interface HourlyBucket {
   hour: number;
@@ -32,12 +34,43 @@ export interface CalendarDay {
   count: number;
 }
 
+export interface MonthlyEmployeeRow {
+  person_id: number;
+  employee_id: string | null;
+  name: string;
+  role: string;
+  station: string | null;
+  scheduleStart: string | null;
+  scheduleEnd: string | null;
+  /** Total working days in the month (excl. weekends + holidays) */
+  requiredDays: number;
+  /** Days the employee was present */
+  presentDays: number;
+  /** Days absent */
+  absentDays: number;
+  /** Total worked minutes */
+  totalWorkedMinutes: number;
+  /** Required minutes (requiredDays × daily schedule minutes) */
+  requiredMinutes: number;
+  /** Deficit minutes (negative = worked less than required) */
+  deficitMinutes: number;
+  /** Number of days late */
+  lateDays: number;
+  /** Total delay minutes */
+  totalDelayMinutes: number;
+  /** Number of days with early departure */
+  earlyDepartureDays: number;
+  sessions: DailySession[];
+}
+
 @Injectable()
 export class ReportsService {
   constructor(
     @InjectRepository(Attendance)
     private readonly attendanceRepo: Repository<Attendance>,
     private readonly peopleService: PeopleService,
+    private readonly attendanceService: AttendanceService,
+    private readonly holidaysService: HolidaysService,
   ) {}
 
   private todayBounds() {
@@ -57,6 +90,7 @@ export class ReportsService {
       .addSelect('COUNT(*)', 'count')
       .where('a.timestamp >= :start', { start })
       .andWhere('a.timestamp <= :end', { end })
+      .andWhere("a.type = 'check-in'")
       .groupBy('hour')
       .orderBy('hour', 'ASC')
       .getRawMany();
@@ -83,9 +117,6 @@ export class ReportsService {
     return this.buildDailyBuckets(30);
   }
 
-  /**
-   * Distinct employees who clocked in today vs total enrolled.
-   */
   async presentToday(): Promise<PresentToday> {
     const { start } = this.todayBounds();
     const [total, presentResult] = await Promise.all([
@@ -94,15 +125,13 @@ export class ReportsService {
         .createQueryBuilder('a')
         .select('COUNT(DISTINCT a.person_id)', 'count')
         .where('a.timestamp >= :start', { start })
+        .andWhere("a.type = 'check-in'")
         .getRawOne(),
     ]);
     const present = parseInt(presentResult?.count || '0', 10);
     return { present, total, absent: Math.max(0, total - present) };
   }
 
-  /**
-   * Distinct employees who clocked in today grouped by role.
-   */
   async byRole(): Promise<RoleBucket[]> {
     const { start } = this.todayBounds();
     const rows = await this.attendanceRepo
@@ -111,16 +140,13 @@ export class ReportsService {
       .select('person.role', 'role')
       .addSelect('COUNT(DISTINCT a.person_id)', 'count')
       .where('a.timestamp >= :start', { start })
+      .andWhere("a.type = 'check-in'")
       .groupBy('person.role')
       .orderBy('count', 'DESC')
       .getRawMany();
     return rows.map((r) => ({ role: r.role || 'Unknown', count: parseInt(r.count, 10) }));
   }
 
-  /**
-   * Returns one entry per calendar day for the given year/month (1-indexed),
-   * with the count of distinct employees who clocked in that day.
-   */
   async calendarMonth(year: number, month: number): Promise<CalendarDay[]> {
     const start = new Date(year, month - 1, 1);
     const end = new Date(year, month, 0, 23, 59, 59, 999);
@@ -132,6 +158,7 @@ export class ReportsService {
       .addSelect('COUNT(DISTINCT a.person_id)', 'count')
       .where('a.timestamp >= :start', { start })
       .andWhere('a.timestamp <= :end', { end })
+      .andWhere("a.type = 'check-in'")
       .groupBy('date')
       .getRawMany();
 
@@ -148,6 +175,110 @@ export class ReportsService {
     return result;
   }
 
+  /**
+   * Monthly working-hours report per employee.
+   * Excludes weekends and public holidays.
+   * Groups by station if provided.
+   */
+  async monthlyWorkingHours(
+    year: number,
+    month: number,
+    station?: string,
+    personId?: number,
+  ): Promise<MonthlyEmployeeRow[]> {
+    const from = new Date(year, month - 1, 1);
+    const to = new Date(year, month, 0, 23, 59, 59, 999);
+
+    const holidayDates = await this.holidaysService.getHolidayDates(from, to);
+    const sessions = await this.attendanceService.getDailySessions(
+      from,
+      to,
+      station,
+      personId,
+      holidayDates,
+    );
+
+    // Count required working days in the month
+    const requiredDays = this.countWorkingDays(year, month, holidayDates);
+
+    // Group sessions by person
+    const byPerson: Record<number, DailySession[]> = {};
+    for (const s of sessions) {
+      if (!byPerson[s.person_id]) byPerson[s.person_id] = [];
+      byPerson[s.person_id].push(s);
+    }
+
+    const rows: MonthlyEmployeeRow[] = [];
+
+    for (const [, personSessions] of Object.entries(byPerson)) {
+      const first = personSessions[0];
+      const scheduleMinutes = this.scheduleMinutes(first.scheduleStart, first.scheduleEnd);
+
+      const presentDays = personSessions.length;
+      const totalWorkedMinutes = personSessions.reduce(
+        (sum, s) => sum + (s.workedMinutes ?? 0),
+        0,
+      );
+      const requiredMinutes = scheduleMinutes * requiredDays;
+      const deficitMinutes = totalWorkedMinutes - requiredMinutes;
+
+      const lateDays = personSessions.filter(
+        (s) => s.delayMinutes !== null && s.delayMinutes > 0,
+      ).length;
+      const totalDelayMinutes = personSessions.reduce(
+        (sum, s) => sum + (s.delayMinutes !== null && s.delayMinutes > 0 ? s.delayMinutes : 0),
+        0,
+      );
+      const earlyDepartureDays = personSessions.filter(
+        (s) => s.earlyDepartureMinutes !== null && s.earlyDepartureMinutes > 0,
+      ).length;
+
+      rows.push({
+        person_id: first.person_id,
+        employee_id: first.employee_id,
+        name: first.name,
+        role: first.role,
+        station: first.station,
+        scheduleStart: first.scheduleStart,
+        scheduleEnd: first.scheduleEnd,
+        requiredDays,
+        presentDays,
+        absentDays: Math.max(0, requiredDays - presentDays),
+        totalWorkedMinutes,
+        requiredMinutes,
+        deficitMinutes,
+        lateDays,
+        totalDelayMinutes,
+        earlyDepartureDays,
+        sessions: personSessions,
+      });
+    }
+
+    return rows.sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  /** Count working days in a month (Mon–Fri, excluding holidays) */
+  private countWorkingDays(year: number, month: number, holidayDates: Set<string>): number {
+    const daysInMonth = new Date(year, month, 0).getDate();
+    let count = 0;
+    for (let d = 1; d <= daysInMonth; d++) {
+      const date = new Date(year, month - 1, d);
+      const dow = date.getDay();
+      if (dow === 0 || dow === 6) continue;
+      const key = `${year}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+      if (holidayDates.has(key)) continue;
+      count++;
+    }
+    return count;
+  }
+
+  private scheduleMinutes(start: string | null, end: string | null): number {
+    if (!start || !end) return 0;
+    const [sh, sm] = start.split(':').map(Number);
+    const [eh, em] = end.split(':').map(Number);
+    return (eh * 60 + em) - (sh * 60 + sm);
+  }
+
   private async buildDailyBuckets(days: number): Promise<DailyBucket[]> {
     const start = new Date();
     start.setDate(start.getDate() - (days - 1));
@@ -158,6 +289,7 @@ export class ReportsService {
       .select("TO_CHAR(a.timestamp AT TIME ZONE 'UTC', 'YYYY-MM-DD')", 'date')
       .addSelect('COUNT(*)', 'count')
       .where('a.timestamp >= :start', { start })
+      .andWhere("a.type = 'check-in'")
       .groupBy('date')
       .orderBy('date', 'ASC')
       .getRawMany();
@@ -196,23 +328,87 @@ export class ReportsService {
     const period = from || to ? `${from || 'all time'} to ${to || 'today'}` : 'all records';
 
     const summary = [
-      `"AttendAI — Attendance Report"`,
+      `"Staff Attendance Management System (SAMS) — Attendance Report"`,
       `"Generated","${generatedAt}"`,
       `"Period","${period}"`,
       `"Total records","${records.length}"`,
       ``,
     ].join('\r\n');
 
-    const header = `Date,Employee Name,Role,Check-in Time`;
+    const header = `Date,Employee ID,Employee Name,Role,Station,Type,Time`;
     const rows = records.map((r) => {
+      const empId = (r.person?.employeeId || '').replace(/"/g, '""');
       const name = (r.person?.name || '').replace(/"/g, '""');
       const role = (r.person?.role || '').replace(/"/g, '""');
+      const station = (r.person?.station || '').replace(/"/g, '""');
       const ts = r.timestamp ? new Date(r.timestamp) : null;
       const date = ts ? ts.toLocaleDateString('en-GB', { year: 'numeric', month: '2-digit', day: '2-digit' }) : '';
       const time = ts ? ts.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }) : '';
-      return `${date},"${name}","${role}",${time}`;
+      return `${date},"${empId}","${name}","${role}","${station}",${r.type},${time}`;
     });
 
     return summary + header + '\r\n' + rows.join('\r\n');
+  }
+
+  /** Export monthly working hours report as CSV */
+  async exportMonthlyWorkingHoursCsv(
+    year: number,
+    month: number,
+    station?: string,
+  ): Promise<string> {
+    const rows = await this.monthlyWorkingHours(year, month, station);
+    const monthName = new Date(year, month - 1, 1).toLocaleString('en-US', { month: 'long', year: 'numeric' });
+    const generatedAt = new Date().toLocaleString('en-US', { dateStyle: 'full', timeStyle: 'short' });
+
+    const summary = [
+      `"Staff Attendance Management System (SAMS)"`,
+      `"Monthly Working Hours Report — ${monthName}"`,
+      station ? `"Station","${station}"` : `"Station","All Stations"`,
+      `"Generated","${generatedAt}"`,
+      ``,
+    ].join('\r\n');
+
+    const header = [
+      'Employee ID',
+      'Name',
+      'Role',
+      'Station',
+      'Schedule',
+      'Required Days',
+      'Present Days',
+      'Absent Days',
+      'Required Hours',
+      'Worked Hours',
+      'Deficit Hours',
+      'Late Days',
+      'Total Delay (min)',
+      'Early Departure Days',
+    ].join(',');
+
+    const dataRows = rows.map((r) => {
+      const schedule =
+        r.scheduleStart && r.scheduleEnd ? `${r.scheduleStart}-${r.scheduleEnd}` : 'N/A';
+      const reqHours = (r.requiredMinutes / 60).toFixed(1);
+      const workedHours = (r.totalWorkedMinutes / 60).toFixed(1);
+      const deficitHours = (r.deficitMinutes / 60).toFixed(1);
+      return [
+        `"${r.employee_id || ''}"`,
+        `"${r.name}"`,
+        `"${r.role}"`,
+        `"${r.station || ''}"`,
+        `"${schedule}"`,
+        r.requiredDays,
+        r.presentDays,
+        r.absentDays,
+        reqHours,
+        workedHours,
+        deficitHours,
+        r.lateDays,
+        r.totalDelayMinutes,
+        r.earlyDepartureDays,
+      ].join(',');
+    });
+
+    return summary + header + '\r\n' + dataRows.join('\r\n');
   }
 }

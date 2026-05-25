@@ -4,9 +4,16 @@ import { Attendance } from '../attendance/attendance.entity';
 import { ReportsService } from './reports.service';
 import { ReportsController } from './reports.controller';
 import { PeopleModule } from '../people/people.module';
+import { AttendanceModule } from '../attendance/attendance.module';
+import { HolidaysModule } from '../holidays/holidays.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Attendance]), PeopleModule],
+  imports: [
+    TypeOrmModule.forFeature([Attendance]),
+    PeopleModule,
+    AttendanceModule,
+    HolidaysModule,
+  ],
   providers: [ReportsService],
   controllers: [ReportsController],
 })

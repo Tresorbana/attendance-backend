@@ -1,16 +1,19 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, MoreThanOrEqual } from 'typeorm';
-import { Attendance } from './attendance.entity';
+import { Attendance, AttendanceType } from './attendance.entity';
 import { PeopleService } from '../people/people.service';
 
 export interface AttendanceRecord {
   id: number;
   person_id: number;
+  employee_id: string | null;
   name: string;
   role: string;
+  station: string | null;
   timestamp: Date;
   confidence: number;
+  type: AttendanceType;
 }
 
 export interface StatsResponse {
@@ -18,6 +21,26 @@ export interface StatsResponse {
   todayCount: number;
   attendanceRate: number;
   lastCheckIn: Date | null;
+}
+
+/** Paired check-in / check-out for a single day */
+export interface DailySession {
+  person_id: number;
+  employee_id: string | null;
+  name: string;
+  role: string;
+  station: string | null;
+  date: string;
+  checkIn: string | null;
+  checkOut: string | null;
+  /** worked minutes, null if no check-out */
+  workedMinutes: number | null;
+  /** delay minutes (positive = late), null if no schedule */
+  delayMinutes: number | null;
+  /** early departure minutes (positive = left early), null if no schedule/checkout */
+  earlyDepartureMinutes: number | null;
+  scheduleStart: string | null;
+  scheduleEnd: string | null;
 }
 
 @Injectable()
@@ -28,20 +51,55 @@ export class AttendanceService {
     private readonly peopleService: PeopleService,
   ) {}
 
-  async record(personId: number, confidence: number): Promise<Attendance> {
+  async record(
+    personId: number,
+    confidence: number,
+    type: AttendanceType = 'check-in',
+  ): Promise<Attendance> {
     const entry = this.attendanceRepo.create({
       personId,
       confidence,
+      type,
       timestamp: new Date(),
     });
     return this.attendanceRepo.save(entry);
   }
 
+  /**
+   * Returns the last attendance record of any type for a person.
+   * Used by recognition service to determine cooldown and next action.
+   */
   async getLastForPerson(personId: number): Promise<Attendance | null> {
     return this.attendanceRepo.findOne({
       where: { personId },
       order: { timestamp: 'DESC' },
     });
+  }
+
+  /**
+   * Returns the last check-in record for a person today (no check-out yet).
+   * Used to determine if the next scan should be a check-out.
+   */
+  async getOpenCheckInToday(personId: number): Promise<Attendance | null> {
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+
+    const lastCheckIn = await this.attendanceRepo.findOne({
+      where: { personId, type: 'check-in' },
+      order: { timestamp: 'DESC' },
+    });
+
+    if (!lastCheckIn || lastCheckIn.timestamp < todayStart) return null;
+
+    // Check if there's a check-out after this check-in
+    const checkOut = await this.attendanceRepo.findOne({
+      where: { personId, type: 'check-out' },
+      order: { timestamp: 'DESC' },
+    });
+
+    if (checkOut && checkOut.timestamp > lastCheckIn.timestamp) return null;
+
+    return lastCheckIn;
   }
 
   async getRecent(limit = 10): Promise<AttendanceRecord[]> {
@@ -53,7 +111,14 @@ export class AttendanceService {
     return this.formatRecords(records);
   }
 
-  async getAll(from?: string, to?: string, search?: string, personId?: number): Promise<AttendanceRecord[]> {
+  async getAll(
+    from?: string,
+    to?: string,
+    search?: string,
+    personId?: number,
+    station?: string,
+    type?: AttendanceType,
+  ): Promise<AttendanceRecord[]> {
     const qb = this.attendanceRepo
       .createQueryBuilder('a')
       .leftJoinAndSelect('a.person', 'person')
@@ -66,6 +131,8 @@ export class AttendanceService {
       qb.andWhere('a.timestamp < :to', { to: toDate });
     }
     if (personId) qb.andWhere('a.person_id = :personId', { personId });
+    if (station) qb.andWhere('person.station = :station', { station });
+    if (type) qb.andWhere('a.type = :type', { type });
     if (search && search.trim()) {
       qb.andWhere('person.name ILIKE :search', { search: `%${search.trim()}%` });
     }
@@ -80,13 +147,20 @@ export class AttendanceService {
 
     const [totalPeople, todayCount, uniqueTodayResult, [lastRecord]] = await Promise.all([
       this.peopleService.count(),
-      this.attendanceRepo.count({ where: { timestamp: MoreThanOrEqual(todayStart) } }),
+      this.attendanceRepo.count({
+        where: { timestamp: MoreThanOrEqual(todayStart), type: 'check-in' },
+      }),
       this.attendanceRepo
         .createQueryBuilder('a')
         .select('COUNT(DISTINCT a.person_id)', 'count')
         .where('a.timestamp >= :todayStart', { todayStart })
+        .andWhere("a.type = 'check-in'")
         .getRawOne(),
-      this.attendanceRepo.find({ order: { timestamp: 'DESC' }, take: 1 }),
+      this.attendanceRepo.find({
+        where: { type: 'check-in' },
+        order: { timestamp: 'DESC' },
+        take: 1,
+      }),
     ]);
 
     const uniqueToday = parseInt(uniqueTodayResult?.count || '0', 10);
@@ -101,14 +175,118 @@ export class AttendanceService {
     };
   }
 
+  /**
+   * Build daily sessions (check-in + check-out pairs) for a date range.
+   * Excludes weekends and public holidays.
+   */
+  async getDailySessions(
+    from: Date,
+    to: Date,
+    station?: string,
+    personId?: number,
+    holidayDates?: Set<string>,
+  ): Promise<DailySession[]> {
+    const qb = this.attendanceRepo
+      .createQueryBuilder('a')
+      .leftJoinAndSelect('a.person', 'person')
+      .where('a.timestamp >= :from', { from })
+      .andWhere('a.timestamp <= :to', { to })
+      .orderBy('a.timestamp', 'ASC');
+
+    if (station) qb.andWhere('person.station = :station', { station });
+    if (personId) qb.andWhere('a.person_id = :personId', { personId });
+
+    const records = await qb.getMany();
+
+    // Group by person + date
+    const grouped: Record<string, Record<string, Attendance[]>> = {};
+    for (const r of records) {
+      const dateKey = r.timestamp.toISOString().slice(0, 10);
+      const personKey = String(r.personId);
+      if (!grouped[personKey]) grouped[personKey] = {};
+      if (!grouped[personKey][dateKey]) grouped[personKey][dateKey] = [];
+      grouped[personKey][dateKey].push(r);
+    }
+
+    const sessions: DailySession[] = [];
+
+    for (const [, byDate] of Object.entries(grouped)) {
+      for (const [dateKey, recs] of Object.entries(byDate)) {
+        // Skip weekends
+        const d = new Date(dateKey + 'T00:00:00');
+        const dow = d.getDay(); // 0=Sun, 6=Sat
+        if (dow === 0 || dow === 6) continue;
+        // Skip holidays
+        if (holidayDates?.has(dateKey)) continue;
+
+        const person = recs[0].person;
+        const checkIns = recs.filter((r) => r.type === 'check-in').sort((a, b) => +a.timestamp - +b.timestamp);
+        const checkOuts = recs.filter((r) => r.type === 'check-out').sort((a, b) => +a.timestamp - +b.timestamp);
+
+        const firstIn = checkIns[0] ?? null;
+        const lastOut = checkOuts[checkOuts.length - 1] ?? null;
+
+        const checkInTime = firstIn ? this.toHHMM(firstIn.timestamp) : null;
+        const checkOutTime = lastOut ? this.toHHMM(lastOut.timestamp) : null;
+
+        let workedMinutes: number | null = null;
+        if (firstIn && lastOut) {
+          workedMinutes = Math.round((+lastOut.timestamp - +firstIn.timestamp) / 60000);
+        }
+
+        let delayMinutes: number | null = null;
+        if (person?.scheduleStart && firstIn) {
+          delayMinutes = this.minutesDiff(person.scheduleStart, checkInTime!);
+        }
+
+        let earlyDepartureMinutes: number | null = null;
+        if (person?.scheduleEnd && lastOut) {
+          earlyDepartureMinutes = this.minutesDiff(checkOutTime!, person.scheduleEnd);
+        }
+
+        sessions.push({
+          person_id: person?.id ?? recs[0].personId,
+          employee_id: person?.employeeId ?? null,
+          name: person?.name ?? 'Unknown',
+          role: person?.role ?? 'Unknown',
+          station: person?.station ?? null,
+          date: dateKey,
+          checkIn: checkInTime,
+          checkOut: checkOutTime,
+          workedMinutes,
+          delayMinutes,
+          earlyDepartureMinutes,
+          scheduleStart: person?.scheduleStart ?? null,
+          scheduleEnd: person?.scheduleEnd ?? null,
+        });
+      }
+    }
+
+    return sessions.sort((a, b) => a.date.localeCompare(b.date) || a.name.localeCompare(b.name));
+  }
+
+  private toHHMM(date: Date): string {
+    return date.toTimeString().slice(0, 5);
+  }
+
+  /** Returns positive if actual is later than expected (delay/early departure) */
+  private minutesDiff(actual: string, expected: string): number {
+    const [ah, am] = actual.split(':').map(Number);
+    const [eh, em] = expected.split(':').map(Number);
+    return (ah * 60 + am) - (eh * 60 + em);
+  }
+
   private formatRecords(records: Attendance[]): AttendanceRecord[] {
     return records.map((r) => ({
       id: r.id,
       person_id: r.personId,
+      employee_id: r.person?.employeeId ?? null,
       name: r.person?.name || 'Unknown',
       role: r.person?.role || 'Unknown',
+      station: r.person?.station ?? null,
       timestamp: r.timestamp,
       confidence: r.confidence,
+      type: r.type,
     }));
   }
 
