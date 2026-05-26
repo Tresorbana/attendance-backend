@@ -279,11 +279,17 @@ export class ReportsService {
     return count;
   }
 
+  /**
+   * Calculate net working minutes from a schedule, deducting 1-hour lunch break.
+   * e.g. 08:00–17:00 = 9 hours gross − 1 hour lunch = 8 hours net
+   */
   private scheduleMinutes(start: string | null, end: string | null): number {
     if (!start || !end) return 0;
     const [sh, sm] = start.split(':').map(Number);
     const [eh, em] = end.split(':').map(Number);
-    return (eh * 60 + em) - (sh * 60 + sm);
+    const gross = (eh * 60 + em) - (sh * 60 + sm);
+    // Deduct 60-minute lunch break if schedule is longer than 4 hours
+    return gross > 240 ? gross - 60 : gross;
   }
 
   private async buildDailyBuckets(days: number): Promise<DailyBucket[]> {

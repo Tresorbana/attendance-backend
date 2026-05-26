@@ -248,7 +248,9 @@ export class AttendanceService {
 
         let workedMinutes: number | null = null;
         if (firstIn && lastOut) {
-          workedMinutes = Math.round((+lastOut.timestamp - +firstIn.timestamp) / 60000);
+          const rawMinutes = Math.round((+lastOut.timestamp - +firstIn.timestamp) / 60000);
+          // Deduct 1-hour (60 min) lunch break for any session longer than 4 hours
+          workedMinutes = rawMinutes > 240 ? rawMinutes - 60 : rawMinutes;
         }
 
         let delayMinutes: number | null = null;
