@@ -41,17 +41,23 @@ export class PeopleService {
   ) {}
 
   async findAll(station?: string): Promise<PersonPublic[]> {
-    const qb = this.personRepo
-      .createQueryBuilder('p')
-      .select([
-        'p.id', 'p.employeeId', 'p.name', 'p.role', 'p.station',
-        'p.scheduleStart', 'p.scheduleEnd', 'p.createdAt',
-      ])
-      .orderBy('p.name', 'ASC');
-
-    if (station) qb.where('p.station = :station', { station });
-
-    return qb.getMany() as Promise<PersonPublic[]>;
+    // Use find() with select — more reliable than QueryBuilder partial select
+    // which can silently return empty results if column mapping fails.
+    const people = await this.personRepo.find({
+      select: {
+        id: true,
+        employeeId: true,
+        name: true,
+        role: true,
+        station: true,
+        scheduleStart: true,
+        scheduleEnd: true,
+        createdAt: true,
+      },
+      where: station ? { station } : undefined,
+      order: { name: 'ASC' },
+    });
+    return people as PersonPublic[];
   }
 
   async findAllWithDescriptors(): Promise<Person[]> {
