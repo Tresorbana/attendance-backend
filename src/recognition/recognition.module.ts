@@ -8,5 +8,6 @@ import { AttendanceModule } from '../attendance/attendance.module';
   imports: [PeopleModule, AttendanceModule],
   providers: [RecognitionService],
   controllers: [RecognitionController],
+  exports: [RecognitionService],
 })
 export class RecognitionModule {}

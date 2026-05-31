@@ -6,6 +6,7 @@ import { AuthModule } from './auth/auth.module';
 import { PeopleModule } from './people/people.module';
 import { AttendanceModule } from './attendance/attendance.module';
 import { RecognitionModule } from './recognition/recognition.module';
+import { FingerprintModule } from './fingerprint/fingerprint.module';
 import { ReportsModule } from './reports/reports.module';
 import { HolidaysModule } from './holidays/holidays.module';
 import { StationsModule } from './stations/stations.module';
@@ -27,20 +28,30 @@ function isSyncEnabled(value: string | undefined, fallback: boolean): boolean {
     }),
     TypeOrmModule.forRootAsync({
       imports: [ConfigModule],
-      useFactory: (config: ConfigService) => ({
-        type: 'postgres',
-        host: config.get<string>('DATABASE_HOST', 'localhost'),
-        port: config.get<number>('DATABASE_PORT', 5432),
-        username: config.get<string>('DATABASE_USER', 'attendai'),
-        password: config.get<string>('DATABASE_PASSWORD', 'attendai_secret'),
-        database: config.get<string>('DATABASE_NAME', 'attendai'),
-        entities: [Person, Attendance, Holiday, Station],
-        synchronize: isSyncEnabled(
-          config.get<string>('DB_SYNCHRONIZE'),
-          config.get<string>('NODE_ENV') !== 'production',
-        ),
-        logging: config.get<string>('NODE_ENV') === 'development',
-      }),
+      useFactory: (config: ConfigService) => {
+        const databaseUrl = config.get<string>('DATABASE_URL');
+        const base = {
+          type: 'postgres' as const,
+          entities: [Person, Attendance, Holiday, Station],
+          synchronize: isSyncEnabled(
+            config.get<string>('DB_SYNCHRONIZE'),
+            config.get<string>('NODE_ENV') !== 'production',
+          ),
+          logging: config.get<string>('NODE_ENV') === 'development',
+          ssl: { rejectUnauthorized: false },
+        };
+        if (databaseUrl) {
+          return { ...base, url: databaseUrl };
+        }
+        return {
+          ...base,
+          host: config.get<string>('DATABASE_HOST', 'localhost'),
+          port: config.get<number>('DATABASE_PORT', 5432),
+          username: config.get<string>('DATABASE_USER', 'attendai'),
+          password: config.get<string>('DATABASE_PASSWORD', 'attendai_secret'),
+          database: config.get<string>('DATABASE_NAME', 'attendai'),
+        };
+      },
       inject: [ConfigService],
     }),
     AuthModule,
@@ -48,6 +59,7 @@ function isSyncEnabled(value: string | undefined, fallback: boolean): boolean {
     PeopleModule,
     AttendanceModule,
     RecognitionModule,
+    FingerprintModule,
     ReportsModule,
     HolidaysModule,
     StationsModule,

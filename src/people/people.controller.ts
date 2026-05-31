@@ -34,11 +34,11 @@ export class PeopleController {
   }
 
   @Patch(':id')
-  @ApiOperation({ summary: 'Update employee details (no face re-enroll)' })
+  @ApiOperation({ summary: 'Update employee details (no fingerprint re-enroll)' })
   @ApiParam({ name: 'id', type: Number })
   update(
     @Param('id', ParseIntPipe) id: number,
-    @Body() dto: Partial<Omit<EnrollDto, 'descriptor'>>,
+    @Body() dto: Partial<Omit<EnrollDto, 'fingerprintTemplate'>>,
   ) {
     return this.peopleService.update(id, dto);
   }
@@ -61,18 +61,18 @@ export class EnrollController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Check if an employee would be a duplicate before enrolling',
-    description: 'Returns isDuplicate=true with reason and existing person if a match is found by employeeId, face, or name+station.',
+    description: 'Returns isDuplicate=true with reason and existing person if a match is found by employeeId or name+station.',
   })
-  @ApiResponse({ status: 200, description: '{ isDuplicate, reason?, existingPerson?, faceDistance? }' })
+  @ApiResponse({ status: 200, description: '{ isDuplicate, reason?, existingPerson? }' })
   checkDuplicate(@Body() dto: EnrollDto) {
     return this.peopleService.checkDuplicate(dto);
   }
 
   @Post('enroll')
   @HttpCode(HttpStatus.CREATED)
-  @ApiOperation({ summary: 'Enroll a new person with face descriptor' })
+  @ApiOperation({ summary: 'Enroll a new person with fingerprint template' })
   @ApiResponse({ status: 201, description: '{ id, name }' })
-  @ApiResponse({ status: 409, description: 'Duplicate employee (by ID, face, or name)' })
+  @ApiResponse({ status: 409, description: 'Duplicate employee (by ID or name)' })
   enroll(@Body() dto: EnrollDto) {
     return this.peopleService.enroll(dto);
   }

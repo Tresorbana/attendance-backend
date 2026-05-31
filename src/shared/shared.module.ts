@@ -1,9 +1,9 @@
 import { Global, Module } from '@nestjs/common';
-import { DescriptorCache } from './descriptor-cache';
+import { FingerprintCache } from './fingerprint-cache';
 
 @Global()
 @Module({
-  providers: [DescriptorCache],
-  exports: [DescriptorCache],
+  providers: [FingerprintCache],
+  exports: [FingerprintCache],
 })
 export class SharedModule {}

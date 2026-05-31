@@ -1,9 +1,5 @@
 import {
   IsString,
-  IsArray,
-  IsNumber,
-  ArrayMinSize,
-  ArrayMaxSize,
   IsNotEmpty,
   IsOptional,
   Matches,
@@ -48,14 +44,9 @@ export class EnrollDto {
   scheduleEnd?: string;
 
   @ApiProperty({
-    description: '128-dimensional face descriptor array from face-api.js',
-    type: [Number],
-    minItems: 128,
-    maxItems: 512,
+    description: 'Base64-encoded SourceAFIS fingerprint template captured from U.are.U 4500 scanner',
   })
-  @IsArray()
-  @IsNumber({}, { each: true })
-  @ArrayMinSize(128)
-  @ArrayMaxSize(512)
-  descriptor: number[];
+  @IsString()
+  @IsNotEmpty()
+  fingerprintTemplate: string;
 }

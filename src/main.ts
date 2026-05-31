@@ -2,6 +2,7 @@ import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
+import { WsAdapter } from '@nestjs/platform-ws';
 import { AppModule } from './app.module';
 
 // Use require() to safely handle CJS/ESM dual-publish packages
@@ -19,11 +20,14 @@ async function bootstrap() {
         : ['log', 'error', 'warn', 'debug'],
   });
 
+  // ── WebSocket adapter (native ws — no socket.io dependency) ─────────────
+  app.useWebSocketAdapter(new WsAdapter(app));
+
   // ── Security headers (helmet) ────────────────────────────────────────────
   app.use(
     helmet({
-      crossOriginEmbedderPolicy: false, // needed for face-api.js WASM
-      contentSecurityPolicy: false,     // managed by frontend
+      crossOriginEmbedderPolicy: false,
+      contentSecurityPolicy: false,
     }),
   );
 
@@ -72,7 +76,7 @@ async function bootstrap() {
       .setDescription('Staff Attendance Management System REST API')
       .setVersion('1.0')
       .addTag('auth', 'Authentication')
-      .addTag('recognition', 'Face recognition')
+      .addTag('recognition', 'Fingerprint recognition')
       .addTag('people', 'Employee management')
       .addTag('attendance', 'Attendance records')
       .addTag('reports', 'Reports and analytics')

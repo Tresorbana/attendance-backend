@@ -10,20 +10,18 @@ export class RecognitionController {
 
   @Post('recognize')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Recognize a face from its 128D descriptor' })
+  @ApiOperation({ summary: 'Match a fingerprint template against enrolled employees' })
   @ApiResponse({
     status: 200,
     description:
-      '{ matched: true, name, confidence, person_id } or { matched: false }',
+      '{ matched: true, name, score, person_id, action } or { matched: false }',
   })
-  @ApiResponse({ status: 400, description: 'Invalid descriptor array' })
   recognize(@Body() dto: RecognizeDto) {
-    return this.recognitionService.recognize(dto.descriptor, dto.brightness);
+    return this.recognitionService.recognize(dto.template);
   }
 
   @Get('health')
   @ApiOperation({ summary: 'Health check' })
-  @ApiResponse({ status: 200, description: '{ status: "ok" }' })
   health() {
     return { status: 'ok' };
   }

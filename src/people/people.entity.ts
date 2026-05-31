@@ -32,8 +32,8 @@ export class Person {
   @Column({ type: 'varchar', length: 10, nullable: true, name: 'schedule_end' })
   scheduleEnd: string | null;
 
-  @Column('float', { array: true, name: 'face_descriptor' })
-  faceDescriptor: number[];
+  @Column({ type: 'text', name: 'fingerprint_template', nullable: true })
+  fingerprintTemplate: string | null;
 
   @CreateDateColumn({ name: 'created_at' })
   createdAt: Date;

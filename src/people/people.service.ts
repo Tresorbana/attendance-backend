@@ -7,7 +7,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Person } from './people.entity';
 import { EnrollDto } from './dto/enroll.dto';
-import { DescriptorCache } from '../shared/descriptor-cache';
+import { FingerprintCache } from '../shared/fingerprint-cache';
 
 export interface PersonPublic {
   id: number;
@@ -20,29 +20,21 @@ export interface PersonPublic {
   createdAt: Date;
 }
 
-/** Returned when a duplicate is detected before saving */
 export interface DuplicateCheckResult {
   isDuplicate: boolean;
-  reason?: 'employee_id' | 'face' | 'name';
+  reason?: 'employee_id' | 'name';
   existingPerson?: PersonPublic;
-  /** Face similarity distance (lower = more similar). Only set when reason='face' */
-  faceDistance?: number;
 }
 
 @Injectable()
 export class PeopleService {
-  /** Face distance below this is considered a duplicate (same person) */
-  private readonly FACE_DUPLICATE_THRESHOLD = 0.45;
-
   constructor(
     @InjectRepository(Person)
     private readonly personRepo: Repository<Person>,
-    private readonly descriptorCache: DescriptorCache,
+    private readonly fingerprintCache: FingerprintCache,
   ) {}
 
   async findAll(station?: string): Promise<PersonPublic[]> {
-    // Use find() with select — more reliable than QueryBuilder partial select
-    // which can silently return empty results if column mapping fails.
     const people = await this.personRepo.find({
       select: {
         id: true,
@@ -60,19 +52,13 @@ export class PeopleService {
     return people as PersonPublic[];
   }
 
-  async findAllWithDescriptors(): Promise<Person[]> {
+  /** Returns all people WITH their fingerprint templates (for recognition). */
+  async findAllWithTemplates(): Promise<Person[]> {
     return this.personRepo.find({ order: { id: 'ASC' } });
   }
 
-  /**
-   * Check for duplicates before enrolling.
-   * Checks:
-   *   1. Duplicate employeeId (if provided)
-   *   2. Duplicate face descriptor (euclidean distance < threshold)
-   *   3. Exact name match (case-insensitive, same station)
-   */
   async checkDuplicate(dto: EnrollDto): Promise<DuplicateCheckResult> {
-    // 1. Check employee ID uniqueness
+    // 1. Employee ID uniqueness
     if (dto.employeeId?.trim()) {
       const existing = await this.personRepo.findOne({
         where: { employeeId: dto.employeeId.trim() },
@@ -86,37 +72,12 @@ export class PeopleService {
       }
     }
 
-    // 2. Check face similarity against all enrolled people
-    const allPeople = await this.personRepo.find();
-    let closestPerson: Person | null = null;
-    let closestDistance = Infinity;
-
-    for (const person of allPeople) {
-      if (!person.faceDescriptor || person.faceDescriptor.length < 128) continue;
-      const dist = this.euclideanDistance(dto.descriptor, person.faceDescriptor);
-      if (dist < closestDistance) {
-        closestDistance = dist;
-        closestPerson = person;
-      }
-    }
-
-    if (closestPerson && closestDistance < this.FACE_DUPLICATE_THRESHOLD) {
-      return {
-        isDuplicate: true,
-        reason: 'face',
-        existingPerson: this.toPublic(closestPerson),
-        faceDistance: closestDistance,
-      };
-    }
-
-    // 3. Check exact name + station match
+    // 2. Exact name + station match
     const nameMatch = await this.personRepo
       .createQueryBuilder('p')
       .where('LOWER(p.name) = LOWER(:name)', { name: dto.name.trim() })
       .andWhere(
-        dto.station?.trim()
-          ? 'p.station = :station'
-          : 'p.station IS NULL',
+        dto.station?.trim() ? 'p.station = :station' : 'p.station IS NULL',
         { station: dto.station?.trim() },
       )
       .getOne();
@@ -133,11 +94,9 @@ export class PeopleService {
   }
 
   async enroll(dto: EnrollDto): Promise<{ id: number; name: string }> {
-    // Guard: reject duplicates
     const dupCheck = await this.checkDuplicate(dto);
     if (dupCheck.isDuplicate) {
-      const msg = this.duplicateMessage(dupCheck);
-      throw new ConflictException(msg);
+      throw new ConflictException(this.duplicateMessage(dupCheck));
     }
 
     const person = this.personRepo.create({
@@ -147,21 +106,20 @@ export class PeopleService {
       station: dto.station?.trim() || null,
       scheduleStart: dto.scheduleStart || null,
       scheduleEnd: dto.scheduleEnd || null,
-      faceDescriptor: dto.descriptor,
+      fingerprintTemplate: dto.fingerprintTemplate,
     });
     const saved = await this.personRepo.save(person);
-    this.descriptorCache.invalidate();
+    this.fingerprintCache.invalidate();
     return { id: saved.id, name: saved.name };
   }
 
   async update(
     id: number,
-    dto: Partial<Omit<EnrollDto, 'descriptor'>>,
+    dto: Partial<Omit<EnrollDto, 'fingerprintTemplate'>>,
   ): Promise<PersonPublic> {
     const person = await this.personRepo.findOne({ where: { id } });
     if (!person) throw new NotFoundException(`Person with id ${id} not found`);
 
-    // If changing employeeId, check it's not taken by another person
     if (dto.employeeId !== undefined && dto.employeeId?.trim()) {
       const conflict = await this.personRepo.findOne({
         where: { employeeId: dto.employeeId.trim() },
@@ -173,19 +131,15 @@ export class PeopleService {
       }
     }
 
-    if (dto.employeeId !== undefined)
-      person.employeeId = dto.employeeId?.trim() || null;
+    if (dto.employeeId !== undefined) person.employeeId = dto.employeeId?.trim() || null;
     if (dto.name !== undefined) person.name = dto.name.trim();
     if (dto.role !== undefined) person.role = dto.role.trim();
-    if (dto.station !== undefined)
-      person.station = dto.station?.trim() || null;
-    if (dto.scheduleStart !== undefined)
-      person.scheduleStart = dto.scheduleStart || null;
-    if (dto.scheduleEnd !== undefined)
-      person.scheduleEnd = dto.scheduleEnd || null;
+    if (dto.station !== undefined) person.station = dto.station?.trim() || null;
+    if (dto.scheduleStart !== undefined) person.scheduleStart = dto.scheduleStart || null;
+    if (dto.scheduleEnd !== undefined) person.scheduleEnd = dto.scheduleEnd || null;
 
     const saved = await this.personRepo.save(person);
-    this.descriptorCache.invalidate();
+    this.fingerprintCache.invalidate();
     return this.toPublic(saved);
   }
 
@@ -193,14 +147,13 @@ export class PeopleService {
     const person = await this.personRepo.findOne({ where: { id } });
     if (!person) throw new NotFoundException(`Person with id ${id} not found`);
     await this.personRepo.remove(person);
-    this.descriptorCache.invalidate();
+    this.fingerprintCache.invalidate();
   }
 
   async count(): Promise<number> {
     return this.personRepo.count();
   }
 
-  /** Return distinct station names (from people table) */
   async getStations(): Promise<string[]> {
     const rows = await this.personRepo
       .createQueryBuilder('p')
@@ -210,8 +163,6 @@ export class PeopleService {
       .getRawMany();
     return rows.map((r) => r.station as string);
   }
-
-  // ── Private helpers ─────────────────────────────────────────────────────────
 
   private toPublic(p: Person): PersonPublic {
     return {
@@ -226,19 +177,10 @@ export class PeopleService {
     };
   }
 
-  private euclideanDistance(a: number[], b: number[]): number {
-    let sum = 0;
-    const len = Math.min(a.length, b.length);
-    for (let i = 0; i < len; i++) sum += (a[i] - b[i]) ** 2;
-    return Math.sqrt(sum);
-  }
-
   private duplicateMessage(check: DuplicateCheckResult): string {
     switch (check.reason) {
       case 'employee_id':
         return `Employee ID "${check.existingPerson?.employeeId}" is already registered to ${check.existingPerson?.name}.`;
-      case 'face':
-        return `This face is already registered as "${check.existingPerson?.name}" (similarity: ${((1 - (check.faceDistance ?? 0)) * 100).toFixed(0)}%). Cannot enroll duplicate.`;
       case 'name':
         return `An employee named "${check.existingPerson?.name}" already exists at this station.`;
       default:
