@@ -1,29 +1,20 @@
 import { Injectable } from '@nestjs/common';
+import { MinutiaeTemplate } from './fingerprint-minutiae';
 
 export interface CachedPerson {
   id: number;
   name: string;
   role: string;
   fingerprintTemplate: string;
+  parsedMinutiae?: MinutiaeTemplate;
 }
 
 @Injectable()
 export class FingerprintCache {
   private data: CachedPerson[] | null = null;
 
-  has(): boolean {
-    return this.data !== null;
-  }
-
-  get(): CachedPerson[] | null {
-    return this.data;
-  }
-
-  set(people: CachedPerson[]) {
-    this.data = people;
-  }
-
-  invalidate() {
-    this.data = null;
-  }
+  has(): boolean { return this.data !== null; }
+  get(): CachedPerson[] | null { return this.data; }
+  set(people: CachedPerson[]) { this.data = people; }
+  invalidate() { this.data = null; }
 }

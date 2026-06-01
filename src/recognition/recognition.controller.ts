@@ -2,11 +2,15 @@ import { Controller, Post, Body, HttpCode, HttpStatus, Get } from '@nestjs/commo
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 import { RecognitionService } from './recognition.service';
 import { RecognizeDto } from './dto/recognize.dto';
+import { FingerprintGateway } from '../fingerprint/fingerprint.gateway';
 
 @ApiTags('recognition')
 @Controller()
 export class RecognitionController {
-  constructor(private readonly recognitionService: RecognitionService) {}
+  constructor(
+    private readonly recognitionService: RecognitionService,
+    private readonly gateway: FingerprintGateway,
+  ) {}
 
   @Post('recognize')
   @HttpCode(HttpStatus.OK)
@@ -16,8 +20,10 @@ export class RecognitionController {
     description:
       '{ matched: true, name, score, person_id, action } or { matched: false }',
   })
-  recognize(@Body() dto: RecognizeDto) {
-    return this.recognitionService.recognize(dto.template);
+  async recognize(@Body() dto: RecognizeDto) {
+    const result = await this.recognitionService.recognize(dto.template);
+    this.gateway.broadcastAttendance(result);
+    return result;
   }
 
   @Get('health')

@@ -11,14 +11,25 @@ const helmet = require('helmet');
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const compression = require('compression');
 
+// A DigitalPersona PNG fingerprint image is typically 30–100 KB.
+// As base64 in a JSON body that is ~1.4× larger, so 10 MB is a safe ceiling.
+const BODY_SIZE_LIMIT = '10mb';
+
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, {
-    // Suppress verbose NestJS startup logs in production
+    // Disable the built-in 100 KB body parser so we can set a larger limit below.
+    bodyParser: false,
     logger:
       process.env.NODE_ENV === 'production'
         ? ['error', 'warn']
         : ['log', 'error', 'warn', 'debug'],
   });
+
+  // Register our own body parsers with a raised limit.
+  // DigitalPersona PNG fingerprints are 30–100 KB; as base64 JSON that's ~133 KB.
+  // 10 MB gives plenty of headroom.
+  app.use(require('express').json({ limit: BODY_SIZE_LIMIT }));
+  app.use(require('express').urlencoded({ limit: BODY_SIZE_LIMIT, extended: true }));
 
   // ── WebSocket adapter (native ws — no socket.io dependency) ─────────────
   app.useWebSocketAdapter(new WsAdapter(app));

@@ -44,7 +44,7 @@ export class EnrollDto {
   scheduleEnd?: string;
 
   @ApiProperty({
-    description: 'Base64-encoded SourceAFIS fingerprint template captured from U.are.U 4500 scanner',
+    description: 'Base64-encoded fingerprint data — either a raw PNG from the DigitalPersona WebSDK or a pre-processed 256×256 grayscale template',
   })
   @IsString()
   @IsNotEmpty()

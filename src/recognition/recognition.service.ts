@@ -4,6 +4,13 @@ import { PeopleService } from '../people/people.service';
 import { AttendanceService } from '../attendance/attendance.service';
 import { FingerprintCache, CachedPerson } from '../shared/fingerprint-cache';
 import { AttendanceType } from '../attendance/attendance.entity';
+import { isPngBase64, processFingerprintPng } from '../shared/image-utils';
+import {
+  MinutiaeTemplate,
+  extractMinutiae,
+  matchMinutiae,
+  isMinutiaeTemplate,
+} from '../shared/fingerprint-minutiae';
 
 export type RecognizeResult =
   | {
@@ -15,6 +22,8 @@ export type RecognizeResult =
       cooldown: boolean;
     }
   | { matched: false };
+
+const LEGACY_PIXEL_SIZE = 256 * 256; // old 256×256 grayscale byte array
 
 @Injectable()
 export class RecognitionService {
@@ -29,7 +38,7 @@ export class RecognitionService {
     private readonly fingerprintCache: FingerprintCache,
   ) {
     this.matchThreshold = parseFloat(
-      this.configService.get<string>('FINGERPRINT_MATCH_THRESHOLD', '0.82'),
+      this.configService.get<string>('FINGERPRINT_MATCH_THRESHOLD', '0.30'),
     );
     const cooldownMinutes = parseInt(
       this.configService.get<string>('CHECKIN_COOLDOWN_MINUTES', '5'),
@@ -40,42 +49,79 @@ export class RecognitionService {
 
   private async getEnrolledPeople(): Promise<CachedPerson[]> {
     if (this.fingerprintCache.has()) return this.fingerprintCache.get()!;
+
     const people = await this.peopleService.findAllWithTemplates();
-    const cached = people
-      .filter((p) => p.fingerprintTemplate)
-      .map((p) => ({
-        id: p.id,
-        name: p.name,
-        role: p.role,
-        fingerprintTemplate: p.fingerprintTemplate!,
-      }));
+    const cached: CachedPerson[] = [];
+
+    for (const p of people) {
+      if (!p.fingerprintTemplate) continue;
+
+      const tmpl = p.fingerprintTemplate;
+      let parsedMinutiae: MinutiaeTemplate | undefined;
+
+      if (isMinutiaeTemplate(tmpl)) {
+        try {
+          parsedMinutiae = JSON.parse(tmpl) as MinutiaeTemplate;
+        } catch {
+          this.logger.warn(`Person id=${p.id} (${p.name}): corrupt minutiae JSON`);
+        }
+      } else {
+        // Old pixel-array template (96×96 or 256×256 base64) — extract minutiae on the fly.
+        try {
+          const pixBuf = Buffer.from(tmpl, 'base64');
+          if (pixBuf.length === LEGACY_PIXEL_SIZE) {
+            parsedMinutiae = extractMinutiae(new Uint8Array(pixBuf), 256, 256);
+            this.logger.debug(`Person id=${p.id}: extracted minutiae from legacy 256×256 template`);
+          } else {
+            this.logger.warn(`Person id=${p.id} (${p.name}): unrecognised legacy template size ${pixBuf.length}`);
+          }
+        } catch (err) {
+          this.logger.warn(`Person id=${p.id} (${p.name}): failed to extract minutiae from legacy template: ${err}`);
+        }
+      }
+
+      if (!parsedMinutiae) {
+        this.logger.warn(`Person id=${p.id} (${p.name}): skipping — no usable minutiae`);
+      }
+
+      cached.push({ id: p.id, name: p.name, role: p.role, fingerprintTemplate: tmpl, parsedMinutiae });
+    }
+
     this.fingerprintCache.set(cached);
     return cached;
   }
 
-  /**
-   * Normalized Cross-Correlation between two equal-length byte buffers.
-   * Returns a value in [-1, 1]; values closer to 1 indicate a match.
-   */
-  private ncc(a: Uint8Array, b: Uint8Array): number {
-    if (a.length !== b.length || a.length === 0) return 0;
-    const n = a.length;
-    let sumA = 0, sumB = 0;
-    for (let i = 0; i < n; i++) { sumA += a[i]; sumB += b[i]; }
-    const meanA = sumA / n;
-    const meanB = sumB / n;
-
-    let num = 0, denA = 0, denB = 0;
-    for (let i = 0; i < n; i++) {
-      const da = a[i] - meanA;
-      const db = b[i] - meanB;
-      num  += da * db;
-      denA += da * da;
-      denB += db * db;
+  /** Convert any probe format (PNG, minutiae JSON, legacy pixels) to a MinutiaeTemplate. */
+  private async probeToMinutiae(templateBase64: string): Promise<MinutiaeTemplate | null> {
+    if (isPngBase64(templateBase64)) {
+      try {
+        const json = await processFingerprintPng(templateBase64);
+        return JSON.parse(json) as MinutiaeTemplate;
+      } catch (err) {
+        this.logger.error(`Failed to process PNG probe: ${err}`);
+        return null;
+      }
     }
 
-    const den = Math.sqrt(denA * denB);
-    return den === 0 ? 0 : num / den;
+    if (isMinutiaeTemplate(templateBase64)) {
+      try {
+        return JSON.parse(templateBase64) as MinutiaeTemplate;
+      } catch {
+        this.logger.error('Invalid minutiae JSON probe');
+        return null;
+      }
+    }
+
+    // Legacy pixel template
+    try {
+      const pixBuf = Buffer.from(templateBase64, 'base64');
+      if (pixBuf.length === LEGACY_PIXEL_SIZE) {
+        return extractMinutiae(new Uint8Array(pixBuf), 256, 256);
+      }
+    } catch {}
+
+    this.logger.error('Probe template format unrecognised');
+    return null;
   }
 
   async recognize(templateBase64: string): Promise<RecognizeResult> {
@@ -86,11 +132,11 @@ export class RecognitionService {
       return { matched: false };
     }
 
-    let probe: Uint8Array;
-    try {
-      probe = new Uint8Array(Buffer.from(templateBase64, 'base64'));
-    } catch {
-      this.logger.error('Invalid probe template');
+    const probe = await this.probeToMinutiae(templateBase64);
+    if (!probe) return { matched: false };
+
+    if (probe.minutiae.length < 5) {
+      this.logger.warn(`Probe has only ${probe.minutiae.length} minutiae — scan quality too low`);
       return { matched: false };
     }
 
@@ -98,15 +144,11 @@ export class RecognitionService {
     let bestScore = -Infinity;
 
     for (const person of people) {
-      try {
-        const candidate = new Uint8Array(Buffer.from(person.fingerprintTemplate, 'base64'));
-        const score = this.ncc(probe, candidate);
-        if (score > bestScore) {
-          bestScore = score;
-          bestMatch = person;
-        }
-      } catch {
-        this.logger.warn(`Skipping invalid template for person id=${person.id}`);
+      if (!person.parsedMinutiae) continue;
+      const score = matchMinutiae(probe, person.parsedMinutiae);
+      if (score > bestScore) {
+        bestScore = score;
+        bestMatch = person;
       }
     }
 
@@ -115,9 +157,9 @@ export class RecognitionService {
       return { matched: false };
     }
 
-    this.logger.debug(`Matched "${bestMatch.name}" ncc=${bestScore.toFixed(4)}`);
+    this.logger.debug(`Matched "${bestMatch.name}" minutiae-score=${bestScore.toFixed(4)}`);
 
-    // ── Cooldown check ───────────────────────────────────────────────────────
+    // ── Cooldown check ────────────────────────────────────────────────────────
     const lastRecord = await this.attendanceService.getLastForPerson(bestMatch.id);
     if (lastRecord) {
       const elapsed = Date.now() - new Date(lastRecord.timestamp).getTime();
@@ -133,10 +175,9 @@ export class RecognitionService {
       }
     }
 
-    // ── Check-in or check-out ────────────────────────────────────────────────
+    // ── Check-in or check-out ─────────────────────────────────────────────────
     const openCheckIn = await this.attendanceService.getOpenCheckInToday(bestMatch.id);
     const action: AttendanceType = openCheckIn ? 'check-out' : 'check-in';
-
     await this.attendanceService.record(bestMatch.id, bestScore, action);
 
     return {

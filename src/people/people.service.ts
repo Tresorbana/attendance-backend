@@ -8,6 +8,7 @@ import { Repository } from 'typeorm';
 import { Person } from './people.entity';
 import { EnrollDto } from './dto/enroll.dto';
 import { FingerprintCache } from '../shared/fingerprint-cache';
+import { isPngBase64, processFingerprintPng } from '../shared/image-utils';
 
 export interface PersonPublic {
   id: number;
@@ -57,6 +58,7 @@ export class PeopleService {
     return this.personRepo.find({ order: { id: 'ASC' } });
   }
 
+
   async checkDuplicate(dto: EnrollDto): Promise<DuplicateCheckResult> {
     // 1. Employee ID uniqueness
     if (dto.employeeId?.trim()) {
@@ -99,6 +101,13 @@ export class PeopleService {
       throw new ConflictException(this.duplicateMessage(dupCheck));
     }
 
+    // If the browser sent a raw PNG (from DigitalPersona SampleFormat.PngImage),
+    // convert it to a 256×256 equalized grayscale template before storing.
+    let fingerprintTemplate = dto.fingerprintTemplate;
+    if (isPngBase64(fingerprintTemplate)) {
+      fingerprintTemplate = await processFingerprintPng(fingerprintTemplate);
+    }
+
     const person = this.personRepo.create({
       employeeId: dto.employeeId?.trim() || null,
       name: dto.name.trim(),
@@ -106,7 +115,7 @@ export class PeopleService {
       station: dto.station?.trim() || null,
       scheduleStart: dto.scheduleStart || null,
       scheduleEnd: dto.scheduleEnd || null,
-      fingerprintTemplate: dto.fingerprintTemplate,
+      fingerprintTemplate,
     });
     const saved = await this.personRepo.save(person);
     this.fingerprintCache.invalidate();

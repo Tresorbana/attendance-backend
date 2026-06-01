@@ -35,6 +35,7 @@ export class Person {
   @Column({ type: 'text', name: 'fingerprint_template', nullable: true })
   fingerprintTemplate: string | null;
 
+
   @CreateDateColumn({ name: 'created_at' })
   createdAt: Date;
 }
