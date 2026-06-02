@@ -6,7 +6,8 @@ export interface CachedPerson {
   name: string;
   role: string;
   fingerprintTemplate: string;
-  parsedMinutiae?: MinutiaeTemplate;
+  /** One template per enrolled scan (one or two placements). */
+  parsedMinutiae: MinutiaeTemplate[];
 }
 
 @Injectable()

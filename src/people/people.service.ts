@@ -101,11 +101,26 @@ export class PeopleService {
       throw new ConflictException(this.duplicateMessage(dupCheck));
     }
 
-    // If the browser sent a raw PNG (from DigitalPersona SampleFormat.PngImage),
-    // convert it to a 256×256 equalized grayscale template before storing.
-    let fingerprintTemplate = dto.fingerprintTemplate;
-    if (isPngBase64(fingerprintTemplate)) {
-      fingerprintTemplate = await processFingerprintPng(fingerprintTemplate);
+    // WebAuthn path: fingerprint data lives in webauthn_credentials, not here.
+    // "pending" is the placeholder sent by the enroll UI before Windows Hello runs.
+    const isWebAuthn = dto.fingerprintTemplate === 'pending' || !dto.fingerprintTemplate;
+
+    let fingerprintTemplate: string | null = null;
+
+    if (!isWebAuthn) {
+      const processOne = async (raw: string) =>
+        isPngBase64(raw) ? processFingerprintPng(raw) : raw;
+
+      const raws = dto.fingerprintTemplates?.length
+        ? dto.fingerprintTemplates
+        : [dto.fingerprintTemplate as string];
+
+      const processed = await Promise.all(raws.map(processOne));
+      const minutiaeArray = processed.map((t) => JSON.parse(t));
+
+      fingerprintTemplate = minutiaeArray.length === 1
+        ? processed[0]
+        : JSON.stringify(minutiaeArray);
     }
 
     const person = this.personRepo.create({

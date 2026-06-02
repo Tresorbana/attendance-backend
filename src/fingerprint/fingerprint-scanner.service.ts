@@ -50,7 +50,6 @@ export class FingerprintScannerService
   private destroyed = false;
   private retryDelay = 2000;
   private consecutiveErrors = 0;
-  private bridgeAbandoned = false;
 
   async onModuleInit() {
     this.startBridge();
@@ -69,7 +68,7 @@ export class FingerprintScannerService
   // ── Bridge process management ───────────────────────────────────────────
 
   private startBridge() {
-    if (this.destroyed || this.bridgeAbandoned) return;
+    if (this.destroyed) return;
 
     this.logger.log(`Starting fingerprint bridge: ${BRIDGE_PATH}`);
 
@@ -95,7 +94,11 @@ export class FingerprintScannerService
     proc.on('exit', (code, signal) => {
       this.logger.warn(`Bridge exited (code=${code}, signal=${signal})`);
       this.bridge = null;
-      this.setStatus('disconnected');
+      // Keep 'error' status if the bridge was killed due to persistent errors —
+      // resetting to 'disconnected' would show a misleading "unplug" message on the frontend.
+      if (this.status !== 'error') {
+        this.setStatus('disconnected');
+      }
       if (!this.destroyed) this.scheduleRestart();
     });
 
@@ -151,20 +154,33 @@ export class FingerprintScannerService
         break;
 
       case 'error': {
-        this.consecutiveErrors++;
-        if (this.consecutiveErrors === 1) {
-          this.logger.error(`Bridge error [${msg.code}]: ${msg.message}`);
-        } else if (this.consecutiveErrors === 10) {
-          this.bridgeAbandoned = true;
-          this.logger.warn(
-            `Bridge reporting persistent errors [${msg.code}] — giving up. ` +
-            `To fix: run bridge/setup-scanner-admin.bat as Administrator, ` +
-            `or install HID Lite Client and use the browser-side DigitalPersona SDK instead.`,
-          );
-          this.bridge?.kill();
-        }
+        this.logger.error(`Bridge error [${msg.code}]: ${msg.message}`);
         this.setStatus('error');
         this.emit('bridge_error', { code: msg.code, message: msg.message });
+
+        if (msg.code === 'ACCESS_DENIED_FATAL') {
+          // Both raw and intermediate capture were denied — retrying immediately is
+          // pointless. Apply a 5-minute back-off and kill the bridge; the exit
+          // handler will schedule a restart.
+          this.logger.warn(
+            `Access denied for all capture modes — pausing 5 min before retry. ` +
+            `To fix: run bridge/setup-scanner-admin.bat as Administrator.`,
+          );
+          this.retryDelay = 300_000;
+          this.bridge?.kill();
+          break;
+        }
+
+        this.consecutiveErrors++;
+        if (this.consecutiveErrors === 10) {
+          this.logger.warn(
+            `Bridge reporting persistent errors [${msg.code}] — pausing 5 min before retry. ` +
+            `To fix immediately: run bridge/setup-scanner-admin.bat as Administrator.`,
+          );
+          this.retryDelay = 300_000;
+          this.consecutiveErrors = 0;
+          this.bridge?.kill();
+        }
         break;
       }
 

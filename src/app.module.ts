@@ -14,6 +14,8 @@ import { Person } from './people/people.entity';
 import { Attendance } from './attendance/attendance.entity';
 import { Holiday } from './holidays/holiday.entity';
 import { Station } from './stations/station.entity';
+import { WebAuthnCredential } from './webauthn/webauthn-credential.entity';
+import { WebAuthnModule } from './webauthn/webauthn.module';
 
 function isSyncEnabled(value: string | undefined, fallback: boolean): boolean {
   if (value == null) return fallback;
@@ -32,7 +34,7 @@ function isSyncEnabled(value: string | undefined, fallback: boolean): boolean {
         const databaseUrl = config.get<string>('DATABASE_URL');
         const base = {
           type: 'postgres' as const,
-          entities: [Person, Attendance, Holiday, Station],
+          entities: [Person, Attendance, Holiday, Station, WebAuthnCredential],
           synchronize: isSyncEnabled(
             config.get<string>('DB_SYNCHRONIZE'),
             config.get<string>('NODE_ENV') !== 'production',
@@ -63,6 +65,7 @@ function isSyncEnabled(value: string | undefined, fallback: boolean): boolean {
     ReportsModule,
     HolidaysModule,
     StationsModule,
+    WebAuthnModule,
   ],
 })
 export class AppModule {}

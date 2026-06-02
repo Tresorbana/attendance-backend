@@ -10,7 +10,8 @@ import { Logger, OnModuleInit } from '@nestjs/common';
 import { Server, WebSocket } from 'ws';
 import { FingerprintScannerService, ScannerStatus, ScanEvent } from './fingerprint-scanner.service';
 import { RecognitionService } from '../recognition/recognition.service';
-import { rawImageToTemplate } from '../shared/image-utils';
+import { PythonPipelineService } from './python-pipeline.service';
+import { isPngBase64 } from '../shared/image-utils';
 
 @WebSocketGateway({ path: '/fingerprint' })
 export class FingerprintGateway
@@ -27,6 +28,7 @@ export class FingerprintGateway
   constructor(
     private readonly scanner: FingerprintScannerService,
     private readonly recognition: RecognitionService,
+    private readonly pythonPipeline: PythonPipelineService,
   ) {}
 
   onModuleInit() {
@@ -57,15 +59,20 @@ export class FingerprintGateway
   }
 
   /**
-   * Fingerprint template submitted directly by the browser-side DigitalPersona reader.
-   * Runs recognition and broadcasts the attendance result to all connected clients.
+   * Fingerprint template submitted by the browser-side DigitalPersona reader.
+   * Python pipeline is the sole matcher — must receive a PNG base64 image.
    */
   @SubscribeMessage('fingerprint_sample')
   async handleFingerprintSample(_client: WebSocket, payload: { template: string }) {
     if (!payload?.template) return;
     try {
-      const result = await this.recognition.recognize(payload.template);
-      this.broadcastAttendance(result);
+      if (!isPngBase64(payload.template)) {
+        this.logger.warn('fingerprint_sample rejected: not a PNG — Python pipeline requires PNG images');
+        this.broadcastAttendance({ matched: false, error: 'non_png_rejected' });
+        return;
+      }
+
+      await this.runPythonIdentify(payload.template);
     } catch (err) {
       this.logger.error(`Browser fingerprint recognition failed: ${err}`);
     }
@@ -91,40 +98,49 @@ export class FingerprintGateway
   // ── Internal ─────────────────────────────────────────────────────────────
 
   private async handleScan(evt: ScanEvent) {
-    let template: string | null = null;
+    // ── Encode raw grayscale → PNG for Python ─────────────────────────────────
+    let pngBase64: string | null = null;
 
     if (evt.width > 0 && evt.height > 0) {
-      // Raw uncompressed grayscale — convert to 96×96 template
       try {
-        template = rawImageToTemplate(evt.width, evt.height, evt.data);
+        pngBase64 = await this.pythonPipeline.rawGrayToPng(
+          evt.width, evt.height, evt.data,
+        );
       } catch (err) {
-        this.logger.error(`Template generation failed: ${err}`);
+        this.logger.error(`PNG encoding failed: ${err}`);
+        this.broadcastAttendance({ matched: false, error: 'image_encoding_failed' });
+        return;
       }
     } else if (evt.width === -1) {
-      // Compressed block (e.g. PNG from ANSI 381) — forward as-is for future handling
-      this.logger.warn(
-        `Received compressed fingerprint block (comprAlg=${evt.height}). ` +
-        'Raw grayscale parsing expected — check ANSI 381 layout.',
-      );
-      return;
+      // Intermediate-mode capture: compressed image bytes (PNG/JPEG2000/WSQ)
+      // comprAlg is encoded in evt.height (3=PNG, 2=JPEG2000, 4=WSQ)
+      pngBase64 = await this.pythonPipeline.compressedImageToPng(evt.data);
+      if (!pngBase64) {
+        this.logger.warn(
+          `Unsupported compressed fingerprint format (comprAlg=${evt.height}) — ` +
+          'WSQ requires an additional decoder. Run NestJS as Administrator for raw capture.',
+        );
+        this.broadcastAttendance({ matched: false, error: 'unsupported_compression' });
+        return;
+      }
+      this.logger.debug(`Decoded compressed fingerprint (comprAlg=${evt.height}) to PNG`);
     } else {
       this.logger.warn(`Received raw BIR (width=${evt.width}) — cannot parse.`);
       return;
     }
 
-    if (!template) return;
+    if (!pngBase64) return;
 
-    // Run recognition and broadcast attendance result
+    // ── Recognition (Python only) ─────────────────────────────────────────────
     try {
-      const result = await this.recognition.recognize(template);
-      this.broadcastAttendance(result);
+      await this.runPythonIdentify(pngBase64);
     } catch (err) {
       this.logger.error(`Recognition failed: ${err}`);
     }
 
-    // Deliver template to any waiting enrollment clients
+    // ── Deliver PNG to enrollment clients ─────────────────────────────────────
     if (this.enrollmentClients.size > 0) {
-      const msg = JSON.stringify({ type: 'enrollment_capture', template });
+      const msg = JSON.stringify({ type: 'enrollment_capture', template: pngBase64 });
       const dead: WebSocket[] = [];
       for (const client of this.enrollmentClients) {
         if (client.readyState === WebSocket.OPEN) {
@@ -134,8 +150,46 @@ export class FingerprintGateway
         }
       }
       dead.forEach((c) => this.enrollmentClients.delete(c));
-      this.enrollmentClients.clear(); // one-shot: clear after delivery
+      this.enrollmentClients.clear();
     }
+  }
+
+  /**
+   * Core Python identification + attendance recording shared by both scan paths.
+   * Broadcasts the result (or a pipeline_unavailable error) to all clients.
+   */
+  async runPythonIdentify(pngBase64: string): Promise<void> {
+    if (!this.pythonPipeline.isEnabled()) {
+      this.logger.error('PYTHON_PIPELINE_URL is not configured — fingerprint pipeline unavailable');
+      this.broadcastAttendance({ matched: false, error: 'pipeline_unavailable' });
+      return;
+    }
+
+    const pyResult = await this.pythonPipeline.identify(pngBase64);
+
+    if (!pyResult) {
+      this.logger.error('Python pipeline did not respond — is the service running on PYTHON_PIPELINE_URL?');
+      this.broadcastAttendance({ matched: false, error: 'pipeline_unavailable' });
+      return;
+    }
+
+    if (!pyResult.matched || !pyResult.person_id) {
+      this.broadcastAttendance({ matched: false, flag: pyResult.flag, pipeline: 'python' });
+      return;
+    }
+
+    const personId = parseInt(pyResult.person_id, 10);
+    if (isNaN(personId)) {
+      this.logger.error(`Python returned non-numeric person_id: ${pyResult.person_id}`);
+      this.broadcastAttendance({ matched: false, error: 'invalid_person_id' });
+      return;
+    }
+
+    const result = await this.recognition.recordAttendanceByPersonId(
+      personId,
+      pyResult.confidence_score,
+    );
+    this.broadcastAttendance({ ...result, pipeline: 'python' });
   }
 
   private broadcast(payload: object) {

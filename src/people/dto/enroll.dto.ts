@@ -2,6 +2,8 @@ import {
   IsString,
   IsNotEmpty,
   IsOptional,
+  IsArray,
+  ArrayMinSize,
   Matches,
 } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
@@ -17,11 +19,7 @@ export class EnrollDto {
   @IsNotEmpty()
   name: string;
 
-  @ApiPropertyOptional({
-    description: 'Role of the person',
-    example: 'Employee',
-    default: 'Employee',
-  })
+  @ApiPropertyOptional({ description: 'Role of the person', example: 'Employee', default: 'Employee' })
   @IsString()
   @IsOptional()
   role: string = 'Employee';
@@ -43,8 +41,18 @@ export class EnrollDto {
   @Matches(/^\d{2}:\d{2}$/, { message: 'scheduleEnd must be HH:MM' })
   scheduleEnd?: string;
 
+  @ApiPropertyOptional({
+    description: 'Multiple fingerprint scans (recommended — array of base64 PNG strings, min 2). Takes precedence over fingerprintTemplate when provided.',
+    type: [String],
+  })
+  @IsArray()
+  @IsString({ each: true })
+  @ArrayMinSize(2)
+  @IsOptional()
+  fingerprintTemplates?: string[];
+
   @ApiProperty({
-    description: 'Base64-encoded fingerprint data — either a raw PNG from the DigitalPersona WebSDK or a pre-processed 256×256 grayscale template',
+    description: 'Single fingerprint scan (base64 PNG or pre-processed minutiae JSON). Ignored when fingerprintTemplates is provided.',
   })
   @IsString()
   @IsNotEmpty()

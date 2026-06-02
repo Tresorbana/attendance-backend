@@ -29,26 +29,26 @@ export function isMinutiaeTemplate(s: string): boolean {
 // ── Tuning constants ─────────────────────────────────────────────────────────
 
 /** Pixels from the image edge that are excluded from minutiae. */
-const BORDER_MARGIN = 14;
+const BORDER_MARGIN = 12;
 
 /**
- * Minimum skeleton branch length before a minutia is accepted.
- * Branches shorter than this that dead-end are Zhang-Suen spur artifacts.
- * At 500 DPI on a 256×256 image, 10 px ≈ 0.5 mm (≈ 1 ridge pitch).
+ * Minimum skeleton branch length to keep a minutia.
+ * Zhang-Suen spurs are 1–3 px; genuine endings need ≥ 5 px of branch.
+ * At 256×256 (from ~400×400 source), ridge pitch ≈ 6 px → 5 is conservative.
  */
-const MIN_RIDGE_LEN = 10;
+const MIN_RIDGE_LEN = 5;
 
 const MIN_MINUTIAE = 5;   // reject probe/gallery with fewer minutiae
-const MAX_MINUTIAE = 50;  // cap to bound matching cost
-const MIN_DIST_SQ  = 64;  // squared min separation between two minutiae (8 px)
+const MAX_MINUTIAE = 60;  // cap to bound matching cost
+const MIN_DIST_SQ  = 49;  // squared min separation (7 px)
 
 /** Minimum absolute matched pairs — prevents tiny lists fooling the ratio score. */
-const MIN_MATCH_PAIRS = 6;
+const MIN_MATCH_PAIRS = 4;
 
 // MPA matching tolerances
-const D_TOL    = 10;              // spatial tolerance (pixels) — was 14
+const D_TOL    = 12;              // spatial tolerance (pixels)
 const D_TOL_SQ = D_TOL * D_TOL;
-const A_TOL    = Math.PI / 8;    // angle tolerance ≈ 22.5° — was 30°
+const A_TOL    = Math.PI / 6;    // angle tolerance ≈ 30°
 
 // ── Neighbor offsets (Zhang-Suen clockwise from top) ─────────────────────────
 // Index 0=P2 (above), 1=P3, 2=P4 (right), 3=P5, 4=P6 (below), 5=P7, 6=P8 (left), 7=P9
@@ -223,14 +223,18 @@ function branchIsLongEnough(
 }
 
 function isValidMinutia(skeleton: Uint8Array, W: number, H: number, m: Minutia): boolean {
+  let total = 0, short = 0;
   for (let k = 0; k < 8; k++) {
     const nr = m.y + ZS_DR[k];
     const nc = m.x + ZS_DC[k];
     if (nr < 0 || nr >= H || nc < 0 || nc >= W) continue;
     if (!skeleton[nr * W + nc]) continue;
-    if (!branchIsLongEnough(skeleton, W, H, nr, nc, m.y, m.x)) return false;
+    total++;
+    if (!branchIsLongEnough(skeleton, W, H, nr, nc, m.y, m.x)) short++;
   }
-  return true;
+  // Endings (1 branch): branch must be long enough.
+  // Bifurcations (3 branches): at most 1 branch may be a spur (the other 2 are genuine ridges).
+  return short === 0 || (total === 3 && short === 1);
 }
 
 // ── Angle estimation ──────────────────────────────────────────────────────────
@@ -362,6 +366,7 @@ export function matchMinutiae(probe: MinutiaeTemplate, gallery: MinutiaeTemplate
         for (let gj = 0; gj < gm.length; gj++) {
           if (used[gj]) continue;
           const g  = gm[gj];
+          if (g.type !== p.type) continue; // ending↔ending or bifurcation↔bifurcation only
           const dx = tX - g.x, dy = tY - g.y;
           const d2 = dx*dx + dy*dy;
           if (d2 < D_TOL_SQ && angleDiff(tA, g.angle) < A_TOL && d2 < bestD2) {

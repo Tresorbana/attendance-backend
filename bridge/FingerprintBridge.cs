@@ -30,6 +30,9 @@ namespace AttendAI.Bridge
         const uint WINBIO_SESSION_FLAGS_DEFAULT = 0x00000000;
         const uint WINBIO_PURPOSE_ENROLL        = 0x00000001;
         const uint WINBIO_DATA_FLAG_RAW         = 0x00000001;
+        const uint WINBIO_DATA_FLAG_INTERMEDIATE = 0x00000002;
+
+        const uint ERROR_ACCESS_DENIED          = 0x80070005;
 
         const int  S_OK                    = 0;
         const uint WINBIO_E_BAD_CAPTURE    = 0x80098004;
@@ -229,10 +232,13 @@ namespace AttendAI.Bridge
 
             if (comprAlg != 0)
             {
-                // Compressed: return the raw block with width=-1, height=comprAlg
-                // so the host process can handle it (e.g. decode PNG)
-                imageData = new byte[stdSize];
-                Array.Copy(bir, stdOff, imageData, 0, stdSize);
+                // Compressed image (PNG/JPEG2000/WSQ): skip the 45-byte ANSI 381 header
+                // and 14-byte view record header — send only the actual compressed bytes.
+                int imgDataOff = viewOff + ANSI381_VIEW_HDR;
+                int imgDataLen = (stdOff + stdSize) - imgDataOff;
+                if (imgDataLen <= 0) return false;
+                imageData = new byte[imgDataLen];
+                Array.Copy(bir, imgDataOff, imageData, 0, imgDataLen);
                 width  = -1;
                 height = comprAlg;
                 return true;
@@ -283,6 +289,9 @@ namespace AttendAI.Bridge
 
             WriteStatus("ready");
 
+            // Start with raw capture; fall back to intermediate if access is denied.
+            uint dataFlag = WINBIO_DATA_FLAG_RAW;
+
             // Capture loop — runs until stdin is closed or the session is cancelled
             while (true)
             {
@@ -294,7 +303,7 @@ namespace AttendAI.Bridge
                 int captHr = WinBioCaptureSample(
                     sessionHandle,
                     WINBIO_PURPOSE_ENROLL,
-                    WINBIO_DATA_FLAG_RAW,
+                    dataFlag,
                     out unitId,
                     out sample,
                     out sampleSize,
@@ -344,6 +353,25 @@ namespace AttendAI.Bridge
                 {
                     WriteError("DEVICE_FAILURE", "Scanner hardware error — check USB connection.");
                     Thread.Sleep(3000);
+                }
+                else if (ucHr == ERROR_ACCESS_DENIED && dataFlag == WINBIO_DATA_FLAG_RAW)
+                {
+                    // Raw capture blocked (requires SYSTEM/admin). Switch to intermediate
+                    // mode (compressed image output) and reset the NestJS error counter.
+                    Console.Error.WriteLine("[Bridge] Raw capture denied (0x80070005); switching to intermediate mode.");
+                    dataFlag = WINBIO_DATA_FLAG_INTERMEDIATE;
+                    WriteStatus("ready");
+                }
+                else if (ucHr == ERROR_ACCESS_DENIED && dataFlag == WINBIO_DATA_FLAG_INTERMEDIATE)
+                {
+                    // Both RAW and INTERMEDIATE modes are denied — the process lacks the
+                    // required privilege (SYSTEM or WinBiometricGroup membership).
+                    // Exit so NestJS can apply a long back-off instead of looping here.
+                    Console.Error.WriteLine("[Bridge] Intermediate capture also denied (0x80070005). Run bridge/setup-scanner-admin.bat as Administrator.");
+                    WriteError("ACCESS_DENIED_FATAL",
+                        "Both raw and intermediate capture are access-denied (0x80070005). " +
+                        "Run bridge/setup-scanner-admin.bat as Administrator to fix.");
+                    break;
                 }
                 else
                 {

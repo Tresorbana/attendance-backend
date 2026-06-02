@@ -10,10 +10,12 @@ import {
   HttpCode,
   HttpStatus,
   Query,
+  Logger,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiParam, ApiQuery } from '@nestjs/swagger';
 import { PeopleService } from './people.service';
 import { EnrollDto } from './dto/enroll.dto';
+import { PythonPipelineService } from '../fingerprint/python-pipeline.service';
 
 @ApiTags('people')
 @Controller('people')
@@ -55,7 +57,12 @@ export class PeopleController {
 @ApiTags('people')
 @Controller()
 export class EnrollController {
-  constructor(private readonly peopleService: PeopleService) {}
+  private readonly logger = new Logger(EnrollController.name);
+
+  constructor(
+    private readonly peopleService: PeopleService,
+    private readonly pythonPipeline: PythonPipelineService,
+  ) {}
 
   @Post('enroll/check-duplicate')
   @HttpCode(HttpStatus.OK)
@@ -71,9 +78,33 @@ export class EnrollController {
   @Post('enroll')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({ summary: 'Enroll a new person with fingerprint template' })
-  @ApiResponse({ status: 201, description: '{ id, name }' })
+  @ApiResponse({ status: 201, description: '{ id, name, pythonEnroll? }' })
   @ApiResponse({ status: 409, description: 'Duplicate employee (by ID or name)' })
-  enroll(@Body() dto: EnrollDto) {
-    return this.peopleService.enroll(dto);
+  async enroll(@Body() dto: EnrollDto) {
+    // 1. Create person and store TS minutiae template (existing path)
+    const person = await this.peopleService.enroll(dto);
+
+    // 2. If Python pipeline enabled, also enroll in the Python service.
+    //    Use fingerprintTemplates (multi-scan) when provided, else wrap single image.
+    if (this.pythonPipeline.isEnabled()) {
+      const images: string[] = dto.fingerprintTemplates?.length
+        ? dto.fingerprintTemplates
+        : dto.fingerprintTemplate && dto.fingerprintTemplate !== 'pending'
+          ? [dto.fingerprintTemplate]
+          : [];
+
+      if (images.length >= 1) {
+        const pyResult = await this.pythonPipeline.enroll(String(person.id), images);
+        if (pyResult) {
+          this.logger.log(
+            `Python enroll person_id=${person.id}: stored=${pyResult.template_stored} ` +
+            `steps=${pyResult.steps_applied?.join(',')} error=${pyResult.error ?? 'none'}`,
+          );
+          return { ...person, pythonEnroll: pyResult };
+        }
+      }
+    }
+
+    return person;
   }
 }

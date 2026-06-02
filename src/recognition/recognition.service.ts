@@ -23,7 +23,7 @@ export type RecognizeResult =
     }
   | { matched: false };
 
-const LEGACY_PIXEL_SIZE = 256 * 256; // old 256×256 grayscale byte array
+const LEGACY_PIXEL_SIZE = 256 * 256;
 
 @Injectable()
 export class RecognitionService {
@@ -38,13 +38,51 @@ export class RecognitionService {
     private readonly fingerprintCache: FingerprintCache,
   ) {
     this.matchThreshold = parseFloat(
-      this.configService.get<string>('FINGERPRINT_MATCH_THRESHOLD', '0.30'),
+      this.configService.get<string>('FINGERPRINT_MATCH_THRESHOLD', '0.45'),
     );
     const cooldownMinutes = parseInt(
       this.configService.get<string>('CHECKIN_COOLDOWN_MINUTES', '5'),
       10,
     );
     this.cooldownMs = cooldownMinutes * 60 * 1000;
+  }
+
+  /** Parse a stored fingerprintTemplate string into one or more MinutiaeTemplates. */
+  private parseStoredTemplates(tmpl: string, personId: number, name: string): MinutiaeTemplate[] {
+    // Array of templates from multi-scan enrollment: "[{...},{...}]"
+    if (tmpl.startsWith('[')) {
+      try {
+        const arr = JSON.parse(tmpl) as MinutiaeTemplate[];
+        return Array.isArray(arr) ? arr : [];
+      } catch {
+        this.logger.warn(`Person id=${personId} (${name}): corrupt template array JSON`);
+        return [];
+      }
+    }
+
+    // Single minutiae JSON: "{...}"
+    if (isMinutiaeTemplate(tmpl)) {
+      try {
+        return [JSON.parse(tmpl) as MinutiaeTemplate];
+      } catch {
+        this.logger.warn(`Person id=${personId} (${name}): corrupt minutiae JSON`);
+        return [];
+      }
+    }
+
+    // Legacy pixel-array template (256×256 grayscale base64)
+    try {
+      const pixBuf = Buffer.from(tmpl, 'base64');
+      if (pixBuf.length === LEGACY_PIXEL_SIZE) {
+        this.logger.debug(`Person id=${personId}: on-the-fly minutiae extraction from legacy 256×256 template`);
+        return [extractMinutiae(new Uint8Array(pixBuf), 256, 256)];
+      }
+      this.logger.warn(`Person id=${personId} (${name}): unrecognised legacy template size ${pixBuf.length}`);
+    } catch (err) {
+      this.logger.warn(`Person id=${personId} (${name}): failed to parse legacy template: ${err}`);
+    }
+
+    return [];
   }
 
   private async getEnrolledPeople(): Promise<CachedPerson[]> {
@@ -56,35 +94,16 @@ export class RecognitionService {
     for (const p of people) {
       if (!p.fingerprintTemplate) continue;
 
-      const tmpl = p.fingerprintTemplate;
-      let parsedMinutiae: MinutiaeTemplate | undefined;
+      const parsedMinutiae = this.parseStoredTemplates(p.fingerprintTemplate, p.id, p.name);
 
-      if (isMinutiaeTemplate(tmpl)) {
-        try {
-          parsedMinutiae = JSON.parse(tmpl) as MinutiaeTemplate;
-        } catch {
-          this.logger.warn(`Person id=${p.id} (${p.name}): corrupt minutiae JSON`);
-        }
-      } else {
-        // Old pixel-array template (96×96 or 256×256 base64) — extract minutiae on the fly.
-        try {
-          const pixBuf = Buffer.from(tmpl, 'base64');
-          if (pixBuf.length === LEGACY_PIXEL_SIZE) {
-            parsedMinutiae = extractMinutiae(new Uint8Array(pixBuf), 256, 256);
-            this.logger.debug(`Person id=${p.id}: extracted minutiae from legacy 256×256 template`);
-          } else {
-            this.logger.warn(`Person id=${p.id} (${p.name}): unrecognised legacy template size ${pixBuf.length}`);
-          }
-        } catch (err) {
-          this.logger.warn(`Person id=${p.id} (${p.name}): failed to extract minutiae from legacy template: ${err}`);
-        }
-      }
-
-      if (!parsedMinutiae) {
+      if (parsedMinutiae.length === 0) {
         this.logger.warn(`Person id=${p.id} (${p.name}): skipping — no usable minutiae`);
+        continue;
       }
 
-      cached.push({ id: p.id, name: p.name, role: p.role, fingerprintTemplate: tmpl, parsedMinutiae });
+      const counts = parsedMinutiae.map((t) => t.minutiae.length).join('+');
+      this.logger.debug(`Enrolled id=${p.id} (${p.name}): ${counts} minutiae across ${parsedMinutiae.length} scan(s)`);
+      cached.push({ id: p.id, name: p.name, role: p.role, fingerprintTemplate: p.fingerprintTemplate, parsedMinutiae });
     }
 
     this.fingerprintCache.set(cached);
@@ -135,6 +154,8 @@ export class RecognitionService {
     const probe = await this.probeToMinutiae(templateBase64);
     if (!probe) return { matched: false };
 
+    this.logger.debug(`Probe minutiae: ${probe.minutiae.length} (endings=${probe.minutiae.filter(m=>m.type==='ending').length} bifurcations=${probe.minutiae.filter(m=>m.type==='bifurcation').length})`);
+
     if (probe.minutiae.length < 5) {
       this.logger.warn(`Probe has only ${probe.minutiae.length} minutiae — scan quality too low`);
       return { matched: false };
@@ -144,11 +165,14 @@ export class RecognitionService {
     let bestScore = -Infinity;
 
     for (const person of people) {
-      if (!person.parsedMinutiae) continue;
-      const score = matchMinutiae(probe, person.parsedMinutiae);
-      if (score > bestScore) {
-        bestScore = score;
-        bestMatch = person;
+      // Score against each stored scan; take the best (highest similarity wins)
+      for (const stored of person.parsedMinutiae) {
+        const score = matchMinutiae(probe, stored);
+        this.logger.debug(`  vs "${person.name}" (${stored.minutiae.length} min): score=${score.toFixed(4)}`);
+        if (score > bestScore) {
+          bestScore = score;
+          bestMatch = person;
+        }
       }
     }
 
@@ -185,6 +209,56 @@ export class RecognitionService {
       name: bestMatch.name,
       score: bestScore,
       person_id: bestMatch.id,
+      action,
+      cooldown: false,
+    };
+  }
+
+  /**
+   * Called when the Python pipeline has already identified a person.
+   * Skips the TS matching step; performs cooldown check, records attendance,
+   * and returns the same RecognizeResult shape as recognize().
+   *
+   * @param personId  NestJS numeric person ID (from Python result, parsed)
+   * @param rawScore  Python confidence score (0–100); stored as 0–1
+   */
+  async recordAttendanceByPersonId(
+    personId: number,
+    rawScore: number,
+  ): Promise<RecognizeResult> {
+    const score = rawScore / 100; // normalise to 0–1 to match existing records
+
+    const people = await this.getEnrolledPeople();
+    const person = people.find((p) => p.id === personId);
+    if (!person) {
+      this.logger.warn(`Python identified person_id=${personId} but not found in cache`);
+      return { matched: false };
+    }
+
+    const lastRecord = await this.attendanceService.getLastForPerson(person.id);
+    if (lastRecord) {
+      const elapsed = Date.now() - new Date(lastRecord.timestamp).getTime();
+      if (elapsed < this.cooldownMs) {
+        return {
+          matched: true,
+          name: person.name,
+          score,
+          person_id: person.id,
+          action: lastRecord.type,
+          cooldown: true,
+        };
+      }
+    }
+
+    const openCheckIn = await this.attendanceService.getOpenCheckInToday(person.id);
+    const action: AttendanceType = openCheckIn ? 'check-out' : 'check-in';
+    await this.attendanceService.record(person.id, score, action);
+
+    return {
+      matched: true,
+      name: person.name,
+      score,
+      person_id: person.id,
       action,
       cooldown: false,
     };
