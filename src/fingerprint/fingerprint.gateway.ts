@@ -46,11 +46,9 @@ export class FingerprintGateway
   }
 
   handleConnection(client: WebSocket) {
-    this.logger.debug('Client connected');
-    client.send(JSON.stringify({
-      type: 'scanner_status',
-      status: this.scanner.getStatus(),
-    }));
+    const status = this.scanner.getStatus();
+    this.logger.debug(`Client connected — scanner status: ${status}`);
+    client.send(JSON.stringify({ type: 'scanner_status', status }));
   }
 
   handleDisconnect(client: WebSocket) {
@@ -98,6 +96,8 @@ export class FingerprintGateway
   // ── Internal ─────────────────────────────────────────────────────────────
 
   private async handleScan(evt: ScanEvent) {
+    this.logger.debug(`Scan received — width=${evt.width} height=${evt.height} bytes=${evt.data.length}`);
+
     // ── Encode raw grayscale → PNG for Python ─────────────────────────────────
     let pngBase64: string | null = null;
 
@@ -125,7 +125,8 @@ export class FingerprintGateway
       }
       this.logger.debug(`Decoded compressed fingerprint (comprAlg=${evt.height}) to PNG`);
     } else {
-      this.logger.warn(`Received raw BIR (width=${evt.width}) — cannot parse.`);
+      this.logger.warn(`Received raw BIR (width=${evt.width}) — cannot parse. Broadcasting error to clients.`);
+      this.broadcastAttendance({ matched: false, error: 'bir_parse_failed' });
       return;
     }
 

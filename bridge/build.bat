@@ -6,7 +6,11 @@ if not exist "%CSC%" (
     exit /b 1
 )
 "%CSC%" /nologo /target:exe /optimize+ /out:FingerprintBridge.exe ^
-    /r:System.ServiceProcess.dll ^
+    /r:System.dll ^
+    /r:System.Core.dll ^
+    /r:System.Drawing.dll ^
+    /r:DPFPDevNET.dll ^
+    /r:DPFPShrNET.dll ^
     FingerprintBridge.cs
 if %ERRORLEVEL% EQU 0 (
     echo Build OK: FingerprintBridge.exe
