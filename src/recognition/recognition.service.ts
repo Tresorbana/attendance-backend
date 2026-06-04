@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PeopleService } from '../people/people.service';
-import { AttendanceService } from '../attendance/attendance.service';
+import { AttendanceService, AttendanceStage } from '../attendance/attendance.service';
 import { FingerprintCache, CachedPerson } from '../shared/fingerprint-cache';
 import { AttendanceType } from '../attendance/attendance.entity';
 import { isPngBase64, processFingerprintPng } from '../shared/image-utils';
@@ -22,6 +22,15 @@ export type RecognizeResult =
       cooldown: boolean;
     }
   | { matched: false };
+
+/**
+ * Optional override for what the next scan should record.
+ *   'auto'        — follow the state machine (default UX)
+ *   'break-start' — force break start (rejected if not currently checked-in)
+ *   'break-end'   — force break end (rejected if not currently on break)
+ *   'check-out'   — force check-out (rejected if currently on break)
+ */
+export type AttendanceMode = 'auto' | 'break-start' | 'break-end' | 'check-out';
 
 const LEGACY_PIXEL_SIZE = 256 * 256;
 
@@ -163,8 +172,11 @@ export class RecognitionService {
 
     let bestMatch: CachedPerson | null = null;
     let bestScore = -Infinity;
+    // Stop early when a score is well above threshold — genuine scores are 0.58–0.92,
+    // false accepts are 0.02–0.05, so 0.80 is unambiguously correct.
+    const EARLY_EXIT_SCORE = 0.80;
 
-    for (const person of people) {
+    outer: for (const person of people) {
       // Score against each stored scan; take the best (highest similarity wins)
       for (const stored of person.parsedMinutiae) {
         const score = matchMinutiae(probe, stored);
@@ -173,6 +185,7 @@ export class RecognitionService {
           bestScore = score;
           bestMatch = person;
         }
+        if (bestScore >= EARLY_EXIT_SCORE) break outer;
       }
     }
 
@@ -199,9 +212,9 @@ export class RecognitionService {
       }
     }
 
-    // ── Check-in or check-out ─────────────────────────────────────────────────
-    const openCheckIn = await this.attendanceService.getOpenCheckInToday(bestMatch.id);
-    const action: AttendanceType = openCheckIn ? 'check-out' : 'check-in';
+    // ── Decide next action via state machine ─────────────────────────────────
+    const stage = await this.attendanceService.getCurrentStage(bestMatch.id);
+    const action: AttendanceType = this.attendanceService.nextAction(stage);
     await this.attendanceService.record(bestMatch.id, bestScore, action);
 
     return {
@@ -215,6 +228,40 @@ export class RecognitionService {
   }
 
   /**
+   * Resolve a mode override against the current stage. Returns:
+   *   - the action to record, OR
+   *   - an error reason string when the override is invalid
+   *
+   * Examples (rejected requests):
+   *   stage='checked-out',  mode='break-start'   → "not_checked_in"
+   *   stage='on-break',     mode='check-out'     → "still_on_break"
+   *   stage='checked-in',   mode='break-end'     → "not_on_break"
+   */
+  private resolveAction(
+    stage: AttendanceStage,
+    mode: AttendanceMode,
+  ): { action: AttendanceType } | { error: string } {
+    if (mode === 'auto') {
+      return { action: this.attendanceService.nextAction(stage) };
+    }
+    if (mode === 'break-start') {
+      if (stage === 'checked-out') return { error: 'not_checked_in' };
+      if (stage === 'on-break')    return { error: 'already_on_break' };
+      return { action: 'break-start' };
+    }
+    if (mode === 'break-end') {
+      if (stage !== 'on-break') return { error: 'not_on_break' };
+      return { action: 'break-end' };
+    }
+    if (mode === 'check-out') {
+      if (stage === 'checked-out') return { error: 'not_checked_in' };
+      if (stage === 'on-break')    return { error: 'still_on_break' };
+      return { action: 'check-out' };
+    }
+    return { error: 'unknown_mode' };
+  }
+
+  /**
    * Called when the Python pipeline has already identified a person.
    * Skips the TS matching step; performs cooldown check, records attendance,
    * and returns the same RecognizeResult shape as recognize().
@@ -225,7 +272,8 @@ export class RecognitionService {
   async recordAttendanceByPersonId(
     personId: number,
     rawScore: number,
-  ): Promise<RecognizeResult> {
+    mode: AttendanceMode = 'auto',
+  ): Promise<RecognizeResult | { matched: true; error: string; name: string; score: number; person_id: number }> {
     const score = rawScore / 100; // normalise to 0–1 to match existing records
 
     const people = await this.getEnrolledPeople();
@@ -250,16 +298,27 @@ export class RecognitionService {
       }
     }
 
-    const openCheckIn = await this.attendanceService.getOpenCheckInToday(person.id);
-    const action: AttendanceType = openCheckIn ? 'check-out' : 'check-in';
-    await this.attendanceService.record(person.id, score, action);
+    const stage = await this.attendanceService.getCurrentStage(person.id);
+    const resolved = this.resolveAction(stage, mode);
+    if ('error' in resolved) {
+      this.logger.warn(`Mode "${mode}" invalid for person_id=${person.id} (stage=${stage}): ${resolved.error}`);
+      return {
+        matched: true,
+        error: resolved.error,
+        name: person.name,
+        score,
+        person_id: person.id,
+      };
+    }
+
+    await this.attendanceService.record(person.id, score, resolved.action);
 
     return {
       matched: true,
       name: person.name,
       score,
       person_id: person.id,
-      action,
+      action: resolved.action,
       cooldown: false,
     };
   }

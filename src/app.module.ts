@@ -41,6 +41,12 @@ function isSyncEnabled(value: string | undefined, fallback: boolean): boolean {
           ),
           logging: config.get<string>('NODE_ENV') === 'development',
           ssl: { rejectUnauthorized: false },
+          poolSize: 20,
+          extra: {
+            min: 2,
+            idleTimeoutMillis: 30_000,
+            connectionTimeoutMillis: 10_000,
+          },
         };
         if (databaseUrl) {
           return { ...base, url: databaseUrl };

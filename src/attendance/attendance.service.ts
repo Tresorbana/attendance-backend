@@ -34,8 +34,10 @@ export interface DailySession {
   date: string;
   checkIn: string | null;
   checkOut: string | null;
-  /** worked minutes, null if no check-out */
+  /** worked minutes after breaks are subtracted; null if no check-out */
   workedMinutes: number | null;
+  /** total break duration in minutes (sum of all break_start→break_end pairs) */
+  breakMinutes: number;
   /** delay minutes (positive = late), null if no schedule */
   delayMinutes: number | null;
   /** early departure minutes (positive = left early), null if no schedule/checkout */
@@ -43,6 +45,9 @@ export interface DailySession {
   scheduleStart: string | null;
   scheduleEnd: string | null;
 }
+
+/** Next-action decision after a recognised scan */
+export type AttendanceStage = 'checked-out' | 'checked-in' | 'on-break';
 
 @Injectable()
 export class AttendanceService {
@@ -103,6 +108,46 @@ export class AttendanceService {
     if (checkOut && checkOut.timestamp > lastCheckIn.timestamp) return null;
 
     return lastCheckIn;
+  }
+
+  /**
+   * Compute the person's current attendance stage today.
+   * Used by the recognition state machine to decide what the next scan means
+   * when no explicit mode is provided.
+   *
+   *   checked-out  — no open check-in, or already checked out
+   *   on-break     — checked in and the latest event is break-start
+   *   checked-in   — checked in and not currently on break
+   */
+  async getCurrentStage(personId: number): Promise<AttendanceStage> {
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+
+    const todays = await this.attendanceRepo.find({
+      where: { personId },
+      order: { timestamp: 'DESC' },
+      take: 20,
+    });
+    const eventsToday = todays.filter((r) => r.timestamp >= todayStart);
+    if (eventsToday.length === 0) return 'checked-out';
+
+    const latest = eventsToday[0];
+    if (latest.type === 'check-out') return 'checked-out';
+    if (latest.type === 'break-start') return 'on-break';
+    // check-in or break-end → working
+    return 'checked-in';
+  }
+
+  /**
+   * Decide the next action implied by the current stage. Used when the
+   * scanner triggers a scan without an explicit mode override.
+   */
+  nextAction(stage: AttendanceStage): AttendanceType {
+    switch (stage) {
+      case 'checked-out': return 'check-in';
+      case 'checked-in':  return 'check-out';
+      case 'on-break':    return 'break-end';
+    }
   }
 
   async getRecent(limit = 10, station?: string): Promise<AttendanceRecord[]> {
@@ -237,8 +282,9 @@ export class AttendanceService {
         if (holidayDates?.has(dateKey)) continue;
 
         const person = recs[0].person;
-        const checkIns = recs.filter((r) => r.type === 'check-in').sort((a, b) => +a.timestamp - +b.timestamp);
-        const checkOuts = recs.filter((r) => r.type === 'check-out').sort((a, b) => +a.timestamp - +b.timestamp);
+        const recsByTime = [...recs].sort((a, b) => +a.timestamp - +b.timestamp);
+        const checkIns  = recsByTime.filter((r) => r.type === 'check-in');
+        const checkOuts = recsByTime.filter((r) => r.type === 'check-out');
 
         const firstIn = checkIns[0] ?? null;
         const lastOut = checkOuts[checkOuts.length - 1] ?? null;
@@ -246,11 +292,32 @@ export class AttendanceService {
         const checkInTime = firstIn ? this.toHHMM(firstIn.timestamp) : null;
         const checkOutTime = lastOut ? this.toHHMM(lastOut.timestamp) : null;
 
+        // Sum break durations — pair every break-start with the next break-end
+        let breakMinutes = 0;
+        let openBreakStart: Date | null = null;
+        for (const r of recsByTime) {
+          if (r.type === 'break-start') {
+            openBreakStart = r.timestamp;
+          } else if (r.type === 'break-end' && openBreakStart) {
+            breakMinutes += Math.max(0, Math.round((+r.timestamp - +openBreakStart) / 60000));
+            openBreakStart = null;
+          }
+        }
+        // Unclosed break (forgot to scan back) — assume break ended at check-out
+        if (openBreakStart && lastOut && lastOut.timestamp > openBreakStart) {
+          breakMinutes += Math.round((+lastOut.timestamp - +openBreakStart) / 60000);
+        }
+
         let workedMinutes: number | null = null;
         if (firstIn && lastOut) {
           const rawMinutes = Math.round((+lastOut.timestamp - +firstIn.timestamp) / 60000);
-          // Deduct 1-hour (60 min) lunch break for any session longer than 4 hours
-          workedMinutes = rawMinutes > 240 ? rawMinutes - 60 : rawMinutes;
+          // Subtract actual recorded breaks; if there were none, fall back to a
+          // 60-min lunch deduction for sessions >4h (legacy behaviour).
+          if (breakMinutes > 0) {
+            workedMinutes = Math.max(0, rawMinutes - breakMinutes);
+          } else {
+            workedMinutes = rawMinutes > 240 ? rawMinutes - 60 : rawMinutes;
+          }
         }
 
         let delayMinutes: number | null = null;
@@ -273,6 +340,7 @@ export class AttendanceService {
           checkIn: checkInTime,
           checkOut: checkOutTime,
           workedMinutes,
+          breakMinutes,
           delayMinutes,
           earlyDepartureMinutes,
           scheduleStart: person?.scheduleStart ?? null,

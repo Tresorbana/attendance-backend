@@ -84,8 +84,9 @@ export class EnrollController {
     // 1. Create person and store TS minutiae template (existing path)
     const person = await this.peopleService.enroll(dto);
 
-    // 2. If Python pipeline enabled, also enroll in the Python service.
-    //    Use fingerprintTemplates (multi-scan) when provided, else wrap single image.
+    // 2. Fire-and-forget Python pipeline enrollment — ICP + TPS + SourceAFIS
+    //    can take 30–60 s; running it in the background lets the HTTP response
+    //    return immediately after the DB insert.
     if (this.pythonPipeline.isEnabled()) {
       const images: string[] = dto.fingerprintTemplates?.length
         ? dto.fingerprintTemplates
@@ -94,14 +95,16 @@ export class EnrollController {
           : [];
 
       if (images.length >= 1) {
-        const pyResult = await this.pythonPipeline.enroll(String(person.id), images);
-        if (pyResult) {
-          this.logger.log(
-            `Python enroll person_id=${person.id}: stored=${pyResult.template_stored} ` +
-            `steps=${pyResult.steps_applied?.join(',')} error=${pyResult.error ?? 'none'}`,
-          );
-          return { ...person, pythonEnroll: pyResult };
-        }
+        void this.pythonPipeline.enroll(String(person.id), images).then((pyResult) => {
+          if (pyResult) {
+            this.logger.log(
+              `Python enroll person_id=${person.id}: stored=${pyResult.template_stored} ` +
+              `steps=${pyResult.steps_applied?.join(',')} error=${pyResult.error ?? 'none'}`,
+            );
+          }
+        }).catch((err) => {
+          this.logger.error(`Python background enroll person_id=${person.id} failed: ${err}`);
+        });
       }
     }
 

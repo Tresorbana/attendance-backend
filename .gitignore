@@ -5,7 +5,6 @@ node_modules/
 dist/
 
 # environment files
-.env
 
 # logs
 *.log
@@ -25,4 +24,3 @@ Thumbs.db
 
 # TypeScript incremental compilation
 *.tsbuildinfo
-.env

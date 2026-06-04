@@ -9,6 +9,7 @@ import { Person } from './people.entity';
 import { EnrollDto } from './dto/enroll.dto';
 import { FingerprintCache } from '../shared/fingerprint-cache';
 import { isPngBase64, processFingerprintPng } from '../shared/image-utils';
+import { PythonPipelineService } from '../fingerprint/python-pipeline.service';
 
 export interface PersonPublic {
   id: number;
@@ -33,6 +34,7 @@ export class PeopleService {
     @InjectRepository(Person)
     private readonly personRepo: Repository<Person>,
     private readonly fingerprintCache: FingerprintCache,
+    private readonly pythonPipeline: PythonPipelineService,
   ) {}
 
   async findAll(station?: string): Promise<PersonPublic[]> {
@@ -172,6 +174,7 @@ export class PeopleService {
     if (!person) throw new NotFoundException(`Person with id ${id} not found`);
     await this.personRepo.remove(person);
     this.fingerprintCache.invalidate();
+    void this.pythonPipeline.deletePerson(String(id));
   }
 
   async count(): Promise<number> {

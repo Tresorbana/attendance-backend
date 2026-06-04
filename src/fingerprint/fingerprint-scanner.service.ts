@@ -109,12 +109,43 @@ export class FingerprintScannerService
     // 4. Try pipe again
     if (await this.tryServicePipe()) return;
 
-    // 5. Nothing worked — fall back to spawning the exe directly
+    // 5. Kill any lingering FingerprintBridge.exe from a previous session — they
+    //    hold the mutex and the DPFP device, so the task trigger above was a no-op
+    //    and a direct spawn would also fail with DPFP_INIT_ERROR.
+    await this.killLingeringBridge();
+    await sleep(1_000);
+    if (this.destroyed) return;
+
+    // 6. Re-trigger the scheduled task now that the old process is gone
+    this.logger.log('Re-triggering scheduled task after clearing old bridge…');
+    await this.triggerScheduledTask();
+    await sleep(3_000);
+    if (this.destroyed) return;
+
+    if (await this.tryServicePipe()) return;
+
+    // 7. Scheduled task not registered — fall back to spawning the exe directly.
+    //    DPFP device is now free (step 5 released it).
     this.logger.warn(
       'Scheduled task unavailable — falling back to direct exe spawn. ' +
       'Run bridge/setup-bridge-service.bat as Administrator to set up the task.',
     );
     this.startBridgeExe();
+  }
+
+  /** Kill any FingerprintBridge.exe still running from a previous session. */
+  private killLingeringBridge(): Promise<void> {
+    this.logger.log('Killing lingering FingerprintBridge.exe processes…');
+    return new Promise<void>((resolve) => {
+      const proc = spawn('taskkill', ['/f', '/im', 'FingerprintBridge.exe'], {
+        shell: true,
+        stdio: 'ignore',
+        windowsHide: true,
+      });
+      const timer = setTimeout(() => { proc.kill(); resolve(); }, 3_000);
+      proc.on('close', () => { clearTimeout(timer); resolve(); });
+      proc.on('error', () => { clearTimeout(timer); resolve(); });
+    });
   }
 
   /** Triggers the scheduled task; resolves when schtasks exits (fire-and-forget). */

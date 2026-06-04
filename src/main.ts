@@ -4,7 +4,6 @@ import { ValidationPipe } from '@nestjs/common';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { WsAdapter } from '@nestjs/platform-ws';
 import { AppModule } from './app.module';
-
 // Use require() to safely handle CJS/ESM dual-publish packages
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const helmet = require('helmet');

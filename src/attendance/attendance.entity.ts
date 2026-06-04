@@ -9,7 +9,7 @@ import {
 } from 'typeorm';
 import { Person } from '../people/people.entity';
 
-export type AttendanceType = 'check-in' | 'check-out';
+export type AttendanceType = 'check-in' | 'check-out' | 'break-start' | 'break-end';
 
 @Entity('attendance')
 export class Attendance {

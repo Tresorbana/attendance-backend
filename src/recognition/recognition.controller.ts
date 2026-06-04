@@ -63,6 +63,33 @@ export class RecognitionController {
     return result ?? { acceptable: false, clarity_score: 0, coverage: 0, reason: 'pipeline_unavailable', error: 'pipeline_unavailable' };
   }
 
+  @Post('coverage')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Submit an enrollment scan to the coverage session and get updated progress.',
+    description: 'Returns per-cell coverage grid + completion flags so the UI can animate ' +
+      'the fingerprint outline and stop only when the full print pattern is captured.',
+  })
+  async coverage(@Body() body: { sessionId: string; image: string }) {
+    if (!body?.sessionId || !body?.image) {
+      return { accepted: false, error: 'missing_fields' };
+    }
+    const result = await this.pythonPipeline.coverage(body.sessionId, body.image);
+    return result ?? {
+      accepted: false, reason: 'pipeline_unavailable', error: 'pipeline_unavailable',
+      clarity_score: 0, coverage: 0, minutiae_count: 0, new_cells_covered: 0, state: null,
+    };
+  }
+
+  @Post('coverage/reset')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Cancel a coverage session' })
+  async coverageReset(@Body() body: { sessionId: string }) {
+    if (!body?.sessionId) return { ok: false };
+    await this.pythonPipeline.resetCoverage(body.sessionId);
+    return { ok: true };
+  }
+
   @Get('health')
   @ApiOperation({ summary: 'Health check' })
   health() {
